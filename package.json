@@ -1,0 +1,52 @@
+{
+  "name": "antigravity-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that lets any AI coding agent delegate work to the Antigravity CLI (agy) and coordinate with it through a shared task board, path locks, and notes.",
+  "type": "module",
+  "bin": {
+    "antigravity-mcp": "src/cli.js"
+  },
+  "main": "src/server.js",
+  "exports": {
+    ".": "./src/server.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/cli.js",
+    "doctor": "node src/cli.js doctor",
+    "test": "node test/smoke.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "antigravity",
+    "agy",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "ai-agents",
+    "multi-agent",
+    "delegation",
+    "orchestration"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adeelali4/antigravity-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adeelali4/antigravity-mcp/issues"
+  },
+  "homepage": "https://github.com/adeelali4/antigravity-mcp#readme"
+}
