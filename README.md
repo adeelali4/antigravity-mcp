@@ -6,6 +6,7 @@
 
 Your agent does the backend. Antigravity does the UI. Neither one breaks the other's files.
 
+[![npm](https://img.shields.io/npm/v/antigravity-mcp.svg)](https://www.npmjs.com/package/antigravity-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/protocol-MCP-blue.svg)](https://modelcontextprotocol.io)
@@ -63,9 +64,21 @@ That's it. This one command:
 
 Now restart your AI tools so they pick it up.
 
+Prefer it installed permanently instead of fetched each run:
+
 ```bash
-npx antigravity-mcp doctor      # is everything working?
-npx antigravity-mcp init --dry-run   # show changes, write nothing
+npm install -g antigravity-mcp
+antigravity-mcp init
+```
+
+Other commands:
+
+```bash
+antigravity-mcp doctor           # is everything working?
+antigravity-mcp doctor --probe   # same, plus a real round trip through agy
+antigravity-mcp init --dry-run   # show changes, write nothing
+antigravity-mcp init --all       # also write configs for tools you haven't installed
+antigravity-mcp init --only claude-code,cursor
 ```
 
 **You need:** Node 18.17 or newer, and the [Antigravity](https://antigravity.google)
@@ -129,8 +142,6 @@ This is the thing that keeps both halves fitting together.
 Each agent can check what the other is doing before it starts, so it picks work
 that doesn't clash.
 
-Everything lives in `~/.antigravity-mcp/board.json`. No database to install.
-
 ---
 
 ## The tools
@@ -155,22 +166,98 @@ it work on mobile"* keeps all the context instead of starting cold.
 
 ---
 
+## How it works inside
+
+### Files on disk
+
+```
+~/.antigravity-mcp/
+├── board.json                    shared state, written under a lock
+└── runs/
+    ├── <task_id>.json            agy's raw result
+    ├── <task_id>.prompt.txt      the brief that was sent
+    └── <task_id>.err             stderr, if the run failed
+```
+
+`board.json` holds `tasks`, `locks`, `notes`, `events`, and `presence`. Every
+write takes an exclusive lock (an atomically created directory — the one
+primitive that behaves the same on Windows and POSIX), then lands via
+write-temp-and-rename, so a crash can't leave a half-written board. Stale locks
+older than 20s are broken automatically.
+
+There's no SQLite. A native build would break `npx` on machines without a
+compiler, and `node:sqlite` is still experimental and Node 22+. The board takes
+a handful of small writes per minute, so a JSON file is the right size of tool.
+
+### Delegation
+
+`ag_delegate` shells out to:
+
+```bash
+agy --print <brief> --output-format json --print-timeout <n>s \
+    --add-dir <cwd> --mode accept-edits --dangerously-skip-permissions
+```
+
+The child is spawned **detached**, with stdout redirected straight to
+`runs/<task_id>.json`. That means a long job survives the MCP server being
+restarted — status is recovered by reading the run file and checking the PID,
+not by holding a child handle.
+
+`ag_followup` reuses the `conversation_id` from agy's JSON output via
+`--conversation`, so context carries across calls.
+
+### Path locks
+
+Paths are normalised with `path.resolve` and case-folded on Windows, so
+`C:\Proj` and `c:\proj` can't defeat the same lock. Overlap is checked in both
+directions — claiming `api/routes.ts` conflicts with a held `api/`, and claiming
+`api/` conflicts with a held `api/routes.ts`.
+
+### Agent identity
+
+Each side runs the same binary with a different `--agent <id>`. That id is what
+every board entry is attributed to. Two clients sharing one id makes their locks
+invisible to each other, which defeats the whole point.
+
+---
+
+## Where configs get written
+
+`init` only touches tools it finds, and backs up any file it edits to
+`<file>.bak-antigravity-mcp`.
+
+| Tool | Config path | Key |
+|---|---|---|
+| Claude Code | `~/.claude.json` | `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` | `mcpServers` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+| Claude Desktop | `%APPDATA%/Claude/claude_desktop_config.json`<br>`~/Library/Application Support/Claude/…` | `mcpServers` |
+| VS Code (Copilot) | `%APPDATA%/Code/User/mcp.json` | `servers` |
+| OpenCode | `~/.config/opencode/opencode.json` | `mcp` |
+| Antigravity CLI | `~/.gemini/config/mcp_config.json` | `mcpServers` |
+| Antigravity IDE | `~/.gemini/antigravity-ide/mcp_config.json` | `mcpServers` |
+
+---
+
 ## Good to know
 
 **Long jobs are safe.** Antigravity runs detached. If your editor or the server
-restarts, the job keeps going. Results are saved in
-`~/.antigravity-mcp/runs/<task_id>.json`.
+restarts, the job keeps going.
 
-**Antigravity edits without asking.** That's the point — it works while you do
-something else. To make it ask first, your agent can pass
-`auto_approve: false`.
+**Antigravity edits without asking.** `ag_delegate` passes
+`--dangerously-skip-permissions` so it can work unattended. Pass
+`auto_approve: false` to make it stop at prompts instead.
 
-**One trap `init` handles for you.** In headless mode `agy` blocks all MCP calls
-unless allowed. If that rule is missing, work still happens but the two agents
-go blind to each other. `init` adds it. `doctor` checks it.
+**One trap `init` handles for you.** In headless mode `agy` auto-denies every MCP
+call unless allow-listed in `~/.gemini/antigravity-cli/settings.json`. If that
+rule is missing, delegation still runs but coordination silently does nothing —
+the worst kind of failure, because it looks like it works. `init` adds
+`mcp(coop/*)`; `doctor` checks for it.
 
-**Antigravity needs to be told where your project is.** Otherwise it works in its
-own scratch folder. Every hand-off passes the project path automatically.
+**Antigravity works in its own scratch project** unless the target directory is
+in its workspace. Every hand-off passes `--add-dir <cwd>` and states the project
+root in the brief.
 
 ---
 
@@ -178,13 +265,9 @@ own scratch folder. Every hand-off passes the project path automatically.
 
 | | |
 |---|---|
-| `AGY_BIN` | Where the `agy` program is |
-| `ANTIGRAVITY_MCP_HOME` | Where the board is saved (default `~/.antigravity-mcp`) |
-| `--agent <id>` | The name this agent uses on the board |
-
-The `--agent` name is how the board tells the two sides apart. `init` sets it for
-you. If you set things up by hand, **give each tool a different name** — same
-name on both sides makes locks stop working.
+| `AGY_BIN` | Path to the `agy` binary |
+| `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) |
+| `--agent <id>` | The name this instance uses on the board |
 
 ---
 
@@ -203,21 +286,31 @@ Add this to your tool's MCP config:
 }
 ```
 
-On the Antigravity side, name it `coop`, use `--agent antigravity`, and add this
-to `~/.gemini/antigravity-cli/settings.json`:
+On the Antigravity side, name the server `coop`, use `--agent antigravity`, and
+add this to `~/.gemini/antigravity-cli/settings.json`:
 
 ```json
 { "permissions": { "allow": ["mcp(coop/*)"] } }
 ```
+
+The server key must match the allow-rule — `coop` here, `mcp(coop/*)` there.
 
 ---
 
 ## Working on the code
 
 ```bash
-npm test                    # 16 checks, two live agents, no Antigravity credits used
-node test/delegation.js     # real end-to-end run (uses Antigravity credits)
+git clone https://github.com/adeelali4/antigravity-mcp
+cd antigravity-mcp
+npm install
+
+npm test                    # 16 checks, two live stdio clients, no agy credits used
+node test/delegation.js     # real end-to-end run (uses agy credits)
+node src/cli.js init --local --dry-run
 ```
+
+`npm test` spawns two real MCP clients as separate processes against one board,
+so cross-process locking and messaging are covered for real rather than mocked.
 
 ---
 
