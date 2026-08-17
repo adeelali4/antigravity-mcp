@@ -1,4 +1,4 @@
-/** `antigravity-mcp doctor` — check every link in the chain and say what is broken. */
+/** `antigravity-mcp-server doctor` — check every link in the chain and say what is broken. */
 
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -36,7 +36,7 @@ export function doctor({ probe = false } = {}) {
     allowed ? PASS : FAIL,
     allowed
       ? "mcp(coop/*) present"
-      : `missing mcp(coop/*) in ${AGY_SETTINGS} — agy will auto-deny coordination calls in headless mode. Run: antigravity-mcp init`
+      : `missing mcp(coop/*) in ${AGY_SETTINGS} — agy will auto-deny coordination calls in headless mode. Run: antigravity-mcp-server init`
   );
 
   try {

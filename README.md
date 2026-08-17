@@ -1,12 +1,12 @@
 <div align="center">
 
-# antigravity-mcp
+# antigravity-mcp-server
 
 **Let two AI agents build your app at the same time — without stepping on each other.**
 
 Your agent does the backend. Antigravity does the UI. Neither one breaks the other's files.
 
-[![npm](https://img.shields.io/npm/v/antigravity-mcp.svg)](https://www.npmjs.com/package/antigravity-mcp)
+[![npm](https://img.shields.io/npm/v/antigravity-mcp-server.svg)](https://www.npmjs.com/package/antigravity-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/protocol-MCP-blue.svg)](https://modelcontextprotocol.io)
@@ -36,7 +36,7 @@ who is doing what, which files are taken, and what they need to tell each other.
           └──────────────┐                ┌──────────────┘
                          ▼                ▼
               ┌─────────────────────────────────┐
-              │        antigravity-mcp          │
+              │        antigravity-mcp-server          │
               │                                 │
               │   board.json                    │
               │    ├─ tasks .... who does what  │
@@ -53,7 +53,7 @@ who is doing what, which files are taken, and what they need to tell each other.
 ## Install
 
 ```bash
-npx antigravity-mcp init
+npx antigravity-mcp-server init
 ```
 
 That's it. This one command:
@@ -67,18 +67,18 @@ Now restart your AI tools so they pick it up.
 Prefer it installed permanently instead of fetched each run:
 
 ```bash
-npm install -g antigravity-mcp
-antigravity-mcp init
+npm install -g antigravity-mcp-server
+antigravity-mcp-server init
 ```
 
 Other commands:
 
 ```bash
-antigravity-mcp doctor           # is everything working?
-antigravity-mcp doctor --probe   # same, plus a real round trip through agy
-antigravity-mcp init --dry-run   # show changes, write nothing
-antigravity-mcp init --all       # also write configs for tools you haven't installed
-antigravity-mcp init --only claude-code,cursor
+antigravity-mcp-server doctor           # is everything working?
+antigravity-mcp-server doctor --probe   # same, plus a real round trip through agy
+antigravity-mcp-server init --dry-run   # show changes, write nothing
+antigravity-mcp-server init --all       # also write configs for tools you haven't installed
+antigravity-mcp-server init --only claude-code,cursor
 ```
 
 **You need:** Node 18.17 or newer, and the [Antigravity](https://antigravity.google)
@@ -280,7 +280,7 @@ Add this to your tool's MCP config:
   "mcpServers": {
     "antigravity": {
       "command": "npx",
-      "args": ["-y", "antigravity-mcp", "--agent", "claude-code"]
+      "args": ["-y", "antigravity-mcp-server", "--agent", "claude-code"]
     }
   }
 }

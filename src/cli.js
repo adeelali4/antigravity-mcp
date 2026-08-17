@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * antigravity-mcp
+ * antigravity-mcp-server
  *
  * With no subcommand this speaks MCP over stdio — that is how MCP clients
  * launch it. Nothing may be written to stdout in that mode; diagnostics go to
@@ -20,13 +20,13 @@ const valueOf = (f) => {
 };
 
 const HELP = `
-  antigravity-mcp — delegate to the Antigravity CLI and coordinate with it
+  antigravity-mcp-server — delegate to the Antigravity CLI and coordinate with it
 
   Usage
-    antigravity-mcp                 Run the MCP server on stdio (how clients launch it)
-    antigravity-mcp init            Register the server into every MCP client found
-    antigravity-mcp doctor          Check that every link in the chain works
-    antigravity-mcp --help
+    antigravity-mcp-server                 Run the MCP server on stdio (how clients launch it)
+    antigravity-mcp-server init            Register the server into every MCP client found
+    antigravity-mcp-server doctor          Check that every link in the chain works
+    antigravity-mcp-server --help
 
   init options
     --dry-run       Show what would change, write nothing
@@ -78,6 +78,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`antigravity-mcp: ${err.stack || err.message}`);
+  console.error(`antigravity-mcp-server: ${err.stack || err.message}`);
   process.exitCode = 1;
 });

@@ -1,10 +1,10 @@
 {
-  "name": "antigravity-mcp",
+  "name": "antigravity-mcp-server",
   "version": "0.1.0",
   "description": "MCP server that lets any AI coding agent delegate work to the Antigravity CLI (agy) and coordinate with it through a shared task board, path locks, and notes.",
   "type": "module",
   "bin": {
-    "antigravity-mcp": "src/cli.js"
+    "antigravity-mcp-server": "src/cli.js"
   },
   "main": "src/server.js",
   "exports": {

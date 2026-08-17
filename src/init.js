@@ -1,4 +1,4 @@
-/** `antigravity-mcp init` — register this server into every MCP client found. */
+/** `antigravity-mcp-server init` — register this server into every MCP client found. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -119,7 +119,7 @@ export function init({ dryRun = false, launchMode = "auto", only = null, all = f
 
 export function printInit(res) {
   const touched = res.results.filter((r) => r.status !== "skipped");
-  console.log(`\n  antigravity-mcp — launching via: ${res.command} ${res.args.join(" ")}\n`);
+  console.log(`\n  antigravity-mcp-server — launching via: ${res.command} ${res.args.join(" ")}\n`);
   for (const r of res.results) {
     const mark = r.status === "error" ? "x" : r.status === "skipped" ? "-" : "+";
     console.log(`  ${mark} ${r.client.padEnd(22)} ${r.status.padEnd(12)} ${r.detail}`);

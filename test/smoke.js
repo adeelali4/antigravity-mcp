@@ -32,7 +32,7 @@ async function connect(agent) {
 const call = async (c, name, args = {}) =>
   JSON.parse((await c.callTool({ name, arguments: args })).content[0].text);
 
-console.log("\nantigravity-mcp smoke test\n");
+console.log("\nantigravity-mcp-server smoke test\n");
 
 const alice = await connect("claude");
 const bob = await connect("antigravity");

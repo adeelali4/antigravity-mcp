@@ -1,5 +1,5 @@
 /**
- * antigravity-mcp — an MCP server that does two things:
+ * antigravity-mcp-server — an MCP server that does two things:
  *
  *  1. Delegation: runs the Antigravity CLI (`agy`) headlessly as a detached
  *     background job, so the calling agent hands off work and keeps going.
