@@ -1,17 +1,53 @@
+<div align="center">
+
 # antigravity-mcp
 
-Let your AI coding agent delegate work to **Antigravity** and stay out of its way.
+**Let two AI agents build your app at the same time — without stepping on each other.**
 
-One MCP server, registered on both sides. Your agent (Claude Code, Cursor,
-Windsurf, VS Code, Gemini CLI, OpenCode — anything that speaks MCP) hands a task
-to the Antigravity CLI, keeps working on its own half, and both sides share a
-board so they never edit the same files.
+Your agent does the backend. Antigravity does the UI. Neither one breaks the other's files.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](https://nodejs.org)
+[![MCP](https://img.shields.io/badge/protocol-MCP-blue.svg)](https://modelcontextprotocol.io)
+
+</div>
+
+---
+
+## The problem
+
+Running two AI coding agents on one project sounds great — until they both edit
+the same file and quietly destroy each other's work.
+
+They can't see each other. That's the whole issue.
+
+## The fix
+
+One small server that both agents plug into. It gives them a shared memory:
+who is doing what, which files are taken, and what they need to tell each other.
 
 ```
-   your agent ──┐                       ┌── delegates via `agy --print`
-                ├── antigravity-mcp ────┤
-  Antigravity ──┘     shared board      └── locks · notes · presence · status
+   Your AI agent                                    Antigravity
+   Claude Code · Cursor · Windsurf                  (agy CLI)
+   VS Code · Gemini CLI · OpenCode
+          │                                              │
+          │  MCP                                     MCP │
+          └──────────────┐                ┌──────────────┘
+                         ▼                ▼
+              ┌─────────────────────────────────┐
+              │        antigravity-mcp          │
+              │                                 │
+              │   board.json                    │
+              │    ├─ tasks .... who does what  │
+              │    ├─ locks .... files taken    │
+              │    ├─ notes .... messages       │
+              │    └─ presence . who is online  │
+              └─────────────────────────────────┘
+                              │
+                              └──► starts `agy` in the background
 ```
+
+---
 
 ## Install
 
@@ -19,87 +55,142 @@ board so they never edit the same files.
 npx antigravity-mcp init
 ```
 
-That detects every MCP client on your machine, registers the server into each
-one, and adds the permission rule Antigravity needs. Then restart your clients.
+That's it. This one command:
+
+- finds every AI tool on your computer
+- adds the server to each one
+- turns on the permission Antigravity needs
+
+Now restart your AI tools so they pick it up.
 
 ```bash
-npx antigravity-mcp doctor      # check every link in the chain
-npx antigravity-mcp init --dry-run
+npx antigravity-mcp doctor      # is everything working?
+npx antigravity-mcp init --dry-run   # show changes, write nothing
 ```
 
-Requires Node >= 18.17 and the [Antigravity](https://antigravity.google) CLI
-(`agy`) on your machine. Without `agy` the coordination tools still work; only
-delegation needs it.
+**You need:** Node 18.17 or newer, and the [Antigravity](https://antigravity.google)
+CLI (`agy`). Without `agy` you still get the shared board — you just can't hand
+work to Antigravity.
 
-## Use it
+---
 
-Just talk to your agent. It has the tools; it works out the calls.
+## How you use it
 
-> "Have Antigravity build the checkout page while you do the payments API."
+You don't learn any commands. You just talk to your agent:
 
-Under the hood your agent writes a self-contained brief, locks its own files,
-launches `agy` as a **detached background job**, and carries on — no blocking.
+> *"Build the checkout page with Antigravity while you do the payments API."*
 
-## Why a shared board
+Your agent takes it from there. Here is what actually happens:
 
-Two agents in one repo collide. This gives them the minimum they need not to:
+```
+  time ──────────────────────────────────────────────────────►
 
-- **Path locks** — claim files before editing. A directory lock covers
-  everything under it, and a claim on a path another agent holds comes back as a
-  conflict instead of a silent overwrite.
-- **Notes** — pass the contract across. *"POST /api/orders returns `{id, status}`
-  — wire the form to it."* The UI half is written against an API that does not
-  exist yet, so this is what keeps the halves compatible.
-- **Presence and activity** — each agent can see what the other is doing before
-  it starts.
+  your agent   ███ writes brief ███│████ payments API ████│ checks result
+                                   │                      │
+  Antigravity                      │███ checkout page ███ │
+                                   │                      │
+                                   └── both work at once ─┘
+```
 
-State lives in `~/.antigravity-mcp/board.json`, written under a cross-process
-lock. No native modules, so `npx` works everywhere.
+Your agent writes a full brief, locks its own files, starts Antigravity in the
+background, and **keeps working**. Nobody waits.
 
-## Tools
+---
 
-| | |
+## Why the shared board matters
+
+### 1. File locks
+
+Before an agent edits a file, it claims it. Locking a folder locks everything
+inside it.
+
+```
+  my-app/
+  ├── api/           [locked] your agent    ← Antigravity is told "taken"
+  ├── db.ts          [locked] your agent
+  ├── components/    [locked] Antigravity   ← your agent stays away
+  └── styles/        [locked] Antigravity
+```
+
+If an agent tries to take a locked file, it gets a clear **conflict** back. No
+silent overwrite.
+
+### 2. Notes
+
+The UI is being built against an API that **does not exist yet**. So the two
+agents pass the plan back and forth:
+
+> *"POST /api/orders is ready. It returns `{ id, status }`. Hook the form to it."*
+
+This is the thing that keeps both halves fitting together.
+
+### 3. Presence
+
+Each agent can check what the other is doing before it starts, so it picks work
+that doesn't clash.
+
+Everything lives in `~/.antigravity-mcp/board.json`. No database to install.
+
+---
+
+## The tools
+
+Your agent picks these on its own. You never type them.
+
+| Group | Tools |
 |---|---|
-| **Delegation** | `ag_delegate` · `ag_task_status` · `ag_task_wait` · `ag_followup` · `ag_cancel` |
-| **Board** | `coop_status` · `board_post` · `board_update` · `board_list` |
-| **Locks** | `claim_paths` · `release_paths` · `check_paths` |
-| **Comms** | `notes_send` · `notes_read` · `presence_set` · `activity` |
+| **Hand off work** | `ag_delegate` · `ag_task_status` · `ag_task_wait` · `ag_followup` · `ag_cancel` |
+| **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` |
+| **File locks** | `claim_paths` · `release_paths` · `check_paths` |
+| **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
 | **Admin** | `coop_reset` |
 
-`coop_status` is the one to reach for first — it answers who is online, what is
-running, what is locked, and what is unread in a single call.
+Two worth knowing about:
 
-`ag_followup` continues an existing Antigravity conversation rather than
-starting cold, so *"now make it responsive"* keeps all the context of the
-original task.
+**`coop_status`** — one call answers everything: who's online, what's running,
+what's locked, what's unread.
 
-## Notes and gotchas
+**`ag_followup`** — carries on the *same* Antigravity conversation. So *"now make
+it work on mobile"* keeps all the context instead of starting cold.
 
-- **Delegated jobs are detached.** A long task survives an MCP server restart;
-  status is recovered from `~/.antigravity-mcp/runs/<task_id>.json`.
-- **`ag_delegate` auto-approves by default** (`--dangerously-skip-permissions`)
-  so Antigravity can edit unattended. Pass `auto_approve: false` for
-  prompt-on-write.
-- **`agy` auto-denies MCP calls in headless mode** unless allow-listed. `init`
-  adds `mcp(coop/*)` to `~/.gemini/antigravity-cli/settings.json`; without it,
-  delegation runs but coordination silently does nothing. `doctor` checks this.
-- **`agy` works in its own scratch project** unless the target directory is in
-  its workspace, so every delegation passes `--add-dir <cwd>` and states the
-  project root in the brief.
+---
 
-## Configuration
+## Good to know
+
+**Long jobs are safe.** Antigravity runs detached. If your editor or the server
+restarts, the job keeps going. Results are saved in
+`~/.antigravity-mcp/runs/<task_id>.json`.
+
+**Antigravity edits without asking.** That's the point — it works while you do
+something else. To make it ask first, your agent can pass
+`auto_approve: false`.
+
+**One trap `init` handles for you.** In headless mode `agy` blocks all MCP calls
+unless allowed. If that rule is missing, work still happens but the two agents
+go blind to each other. `init` adds it. `doctor` checks it.
+
+**Antigravity needs to be told where your project is.** Otherwise it works in its
+own scratch folder. Every hand-off passes the project path automatically.
+
+---
+
+## Settings
 
 | | |
 |---|---|
-| `AGY_BIN` | Path to the `agy` binary |
-| `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) |
-| `--agent <id>` | Identity this instance uses on the board |
+| `AGY_BIN` | Where the `agy` program is |
+| `ANTIGRAVITY_MCP_HOME` | Where the board is saved (default `~/.antigravity-mcp`) |
+| `--agent <id>` | The name this agent uses on the board |
 
-The `--agent` id is how the board tells the two sides apart. `init` sets it per
-client; if you register by hand, give each client a distinct id or lock
-conflicts become invisible.
+The `--agent` name is how the board tells the two sides apart. `init` sets it for
+you. If you set things up by hand, **give each tool a different name** — same
+name on both sides makes locks stop working.
 
-## Manual registration
+---
+
+## Setting it up by hand
+
+Add this to your tool's MCP config:
 
 ```json
 {
@@ -112,15 +203,26 @@ conflicts become invisible.
 }
 ```
 
-On the Antigravity side use the key `coop` and `--agent antigravity`, and add
-`"permissions": { "allow": ["mcp(coop/*)"] }` to
-`~/.gemini/antigravity-cli/settings.json`.
+On the Antigravity side, name it `coop`, use `--agent antigravity`, and add this
+to `~/.gemini/antigravity-cli/settings.json`:
 
-## Development
-
-```bash
-npm test                    # 16 checks, two live stdio clients, no agy quota
-node test/delegation.js     # live end-to-end delegation (spends agy quota)
+```json
+{ "permissions": { "allow": ["mcp(coop/*)"] } }
 ```
 
-MIT
+---
+
+## Working on the code
+
+```bash
+npm test                    # 16 checks, two live agents, no Antigravity credits used
+node test/delegation.js     # real end-to-end run (uses Antigravity credits)
+```
+
+---
+
+<div align="center">
+
+MIT · built by [adeelali4](https://github.com/adeelali4)
+
+</div>
