@@ -92,9 +92,11 @@ antigravity-mcp-server init --global    # force the direct-command form
 antigravity-mcp-server init --npx       # force npx, even with a global install present
 ```
 
-**You need:** Node 18.17 or newer, and at least one of [Antigravity](https://antigravity.google)
-(`agy`) or the [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli)
-(`copilot`). You get the shared board either way — a missing CLI just means you
+**You need:** Node 18.17 or newer, and at least one delegation target —
+[Antigravity](https://antigravity.google) (`agy`), the
+[GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli)
+(`copilot`), or Claude Code itself (`claude`, for delegating to another Claude
+instance). You get the shared board either way — a missing CLI just means you
 can't hand work to that one.
 
 ---
@@ -168,20 +170,26 @@ Your agent picks these on its own. You never type them.
 |---|---|
 | **Hand off to Antigravity** | `ag_delegate` · `ag_task_status` · `ag_task_wait` · `ag_followup` · `ag_cancel` |
 | **Hand off to Copilot** | `copilot_delegate` · `copilot_task_status` · `copilot_task_wait` · `copilot_followup` · `copilot_cancel` |
+| **Hand off to another Claude** | `claude_delegate` · `claude_task_status` · `claude_task_wait` · `claude_followup` · `claude_cancel` |
 | **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` |
 | **File locks** | `claim_paths` · `release_paths` · `check_paths` |
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
 | **Admin** | `coop_reset` |
 
-The two delegation lanes are symmetric — same shape, same behavior — so your
-agent picks whichever CLI you named.
+The three delegation lanes are symmetric — same shape, same behavior — so your
+agent picks whichever CLI you named. `claude_delegate` launches a fully
+independent `claude` CLI process, not a subagent inside the calling session —
+and because it's a plain `claude` invocation, it automatically inherits
+whatever MCP servers are registered at user scope, this one included, so a
+delegated Claude can call `coop_status` / `claim_paths` on itself with no
+extra setup.
 
 Two worth knowing about:
 
 **`coop_status`** — one call answers everything: who's online, what's running,
 what's locked, what's unread.
 
-**`ag_followup` / `copilot_followup`** — carries on the *same* conversation. So
+**`ag_followup` / `copilot_followup` / `claude_followup`** — carries on the *same* conversation. So
 *"now make it work on mobile"* keeps all the context instead of starting cold.
 
 ---
@@ -224,20 +232,27 @@ agy --print <brief> --output-format json --print-timeout <n>s \
 copilot -p <brief> --output-format json --add-dir <cwd> --allow-all-tools
 ```
 
-Both children are spawned **detached**, with output redirected straight to
-`runs/<task_id>.json`. That means a long job survives the MCP server being
+`claude_delegate` shells out to:
+
+```bash
+claude <brief> --print --output-format json --add-dir <cwd> --dangerously-skip-permissions
+```
+
+All three children are spawned **detached**, with output redirected straight
+to `runs/<task_id>.json`. That means a long job survives the MCP server being
 restarted — status is recovered by reading the run file and checking the PID,
-not by holding a child handle. agy emits one JSON object; copilot emits JSONL
-(one event per line, terminated by a `type: "result"` line) — both get
-normalised to the same `{status, response, conversation_id, usage}` shape
-before landing on the board, so the rest of the server doesn't care which
-backend produced them.
+not by holding a child handle. agy and claude each emit one JSON object;
+copilot emits JSONL (one event per line, terminated by a `type: "result"`
+line) — all three get normalised to the same
+`{status, response, conversation_id, usage}` shape before landing on the
+board, so the rest of the server doesn't care which backend produced them.
 
 `ag_followup` reuses agy's `conversation_id` via `--conversation`;
-`copilot_followup` reuses Copilot's session id via `--resume`. Either way,
-context carries across calls. Note: copilot has no session-level timeout flag
-(`agy`'s `--print-timeout` has no equivalent) — a hung Copilot job just stays
-"running" until it exits on its own or `copilot_cancel` kills it.
+`copilot_followup` reuses Copilot's session id via `--resume`; `claude_followup`
+does the same via `claude`'s own `--resume`. Either way, context carries across
+calls. Note: copilot and claude have no session-level timeout flag (`agy`'s
+`--print-timeout` has no equivalent on either) — a hung job just stays
+"running" until it exits on its own or the matching `*_cancel` kills it.
 
 ### Path locks
 
@@ -303,6 +318,7 @@ root in the brief.
 |---|---|
 | `AGY_BIN` | Path to the `agy` binary |
 | `COPILOT_BIN` | Path to the `copilot` binary |
+| `CLAUDE_BIN` | Path to the `claude` binary |
 | `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) |
 | `--agent <id>` | The name this instance uses on the board |
 
@@ -358,6 +374,7 @@ npm install
 npm test                             # 16 checks, two live stdio clients, no CLI credits used
 node test/delegation.js              # real end-to-end run through agy (uses agy credits)
 node test/delegation-copilot.js      # real end-to-end run through copilot (uses Copilot credits)
+node test/delegation-claude.js       # real end-to-end run through another claude (uses API usage)
 node src/cli.js init --local --dry-run
 ```
 

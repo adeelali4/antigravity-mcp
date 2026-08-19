@@ -25,6 +25,9 @@ import { spawnAgy, readResult as readAgyResult, readStderr as readAgyStderr, fin
 import {
   spawnCopilot, readResult as readCopilotResult, readStderr as readCopilotStderr, findCopilot,
 } from "./copilot.js";
+import {
+  spawnClaude, readResult as readClaudeResult, readStderr as readClaudeStderr, findClaude,
+} from "./claude.js";
 
 /**
  * One entry per delegation target, keyed by the `owner` string recorded on the
@@ -34,6 +37,10 @@ import {
 const BACKENDS = {
   antigravity: { findBin: findAgy, spawn: spawnAgy, readResult: readAgyResult, readStderr: readAgyStderr },
   copilot: { findBin: findCopilot, spawn: spawnCopilot, readResult: readCopilotResult, readStderr: readCopilotStderr },
+  // Not "claude" -- the calling agent's own board identity is sometimes that
+  // literal string, and owner doubles as the BACKENDS key, so a collision
+  // there would make a delegated task look like it belongs to the caller.
+  "claude-agent": { findBin: findClaude, spawn: spawnClaude, readResult: readClaudeResult, readStderr: readClaudeStderr },
 };
 
 export const AGENT = (() => {
@@ -96,7 +103,7 @@ function slim(t) {
  * Shared core of every `*_delegate` tool: validate cwd + bin, check for path
  * conflicts, spawn, and record the task + locks + presence on the board.
  */
-function delegateTask({ owner, id, briefing, cwd, model, spawnExtra, claim, findBin, spawn, title, prompt }) {
+function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, claim, findBin, spawn, title, prompt }) {
   if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
     return { error: `cwd is not a directory: ${cwd}` };
   }
@@ -134,7 +141,7 @@ function delegateTask({ owner, id, briefing, cwd, model, spawnExtra, claim, find
 
   return {
     task_id: id, status: "running", pid, cwd, claimed: claim,
-    next: `Keep working on your own part; check ${owner === "antigravity" ? "ag" : owner}_task_status(task_id) later.`,
+    next: `Keep working on your own part; check ${toolPrefix}_task_status(task_id) later.`,
   };
 }
 
@@ -284,7 +291,7 @@ export function buildServer() {
       const id = taskId();
       return ok(
         delegateTask({
-          owner: "antigravity", id, cwd, claim, title: a.title, prompt: a.prompt,
+          owner: "antigravity", toolPrefix: "ag", id, cwd, claim, title: a.title, prompt: a.prompt,
           briefing: briefingFor("antigravity", cwd, claim, a.prompt),
           findBin: findAgy, spawn: spawnAgy,
           spawnExtra: {
@@ -408,7 +415,7 @@ export function buildServer() {
       const id = taskId();
       return ok(
         delegateTask({
-          owner: "copilot", id, cwd, claim, title: a.title, prompt: a.prompt,
+          owner: "copilot", toolPrefix: "copilot", id, cwd, claim, title: a.title, prompt: a.prompt,
           briefing: briefingFor("copilot", cwd, claim, a.prompt),
           findBin: findCopilot, spawn: spawnCopilot,
           spawnExtra: {
@@ -492,6 +499,123 @@ export function buildServer() {
     {
       title: "Cancel a delegated Copilot task",
       description: "Stop a running delegated Copilot task and release any paths it held.",
+      inputSchema: { task_id: z.string() },
+    },
+    async ({ task_id }) => ok(cancelTask(task_id))
+  );
+
+  server.registerTool(
+    "claude_delegate",
+    {
+      title: "Delegate a task to another Claude Code instance",
+      description:
+        "Hand a task to a fully independent `claude` CLI process -- another Claude, not " +
+        "a subagent inside this session. Starts it headlessly as a detached background " +
+        "job and returns immediately with a task_id -- it does NOT block, so keep " +
+        "working on your own part meanwhile.\n\n" +
+        "Write `prompt` as a complete, self-contained brief: the other instance cannot " +
+        "see this conversation or your context. State the goal, the stack and " +
+        "conventions actually in use, the files it owns, what it must NOT touch, and the " +
+        "contract it must code against, same as delegating to agy or Copilot.\n\n" +
+        "`claim` locks paths for it up front so you stay off them. `auto_approve` passes " +
+        "--dangerously-skip-permissions so it can edit unattended.",
+      inputSchema: {
+        title: z.string().describe("Short label for the board"),
+        prompt: z.string().describe("Self-contained brief; the other instance starts cold"),
+        cwd: z.string().describe("Absolute path to the project root"),
+        model: z.string().optional(),
+        add_dirs: z.array(z.string()).optional(),
+        claim: z.array(z.string()).optional().describe("Paths the other instance will own"),
+        auto_approve: z.boolean().optional(),
+      },
+    },
+    async (a) => {
+      const cwd = path.resolve(a.cwd);
+      const claim = (a.claim || []).map(norm);
+      const id = taskId();
+      return ok(
+        delegateTask({
+          owner: "claude-agent", toolPrefix: "claude", id, cwd, claim, title: a.title, prompt: a.prompt,
+          briefing: briefingFor("claude-agent", cwd, claim, a.prompt),
+          findBin: findClaude, spawn: spawnClaude,
+          spawnExtra: { model: a.model, addDirs: a.add_dirs || [], autoApprove: a.auto_approve ?? true },
+        })
+      );
+    }
+  );
+
+  server.registerTool(
+    "claude_task_status",
+    {
+      title: "Check a delegated Claude task",
+      description:
+        "Check a delegated Claude task: running / done / failed, plus its final response " +
+        "and conversation_id (session id) once finished.",
+      inputSchema: {
+        task_id: z.string(),
+        include_output: z.boolean().optional(),
+      },
+    },
+    async ({ task_id, include_output = true }) => {
+      const t = slim(reap(task_id));
+      if (!include_output && t) delete t.result;
+      return ok(t);
+    }
+  );
+
+  server.registerTool(
+    "claude_task_wait",
+    {
+      title: "Wait for a delegated Claude task",
+      description:
+        "Block until a delegated Claude task finishes, or until timeout. Prefer " +
+        "claude_task_status and doing your own work in between -- only wait when you " +
+        "genuinely cannot proceed without its result.",
+      inputSchema: {
+        task_id: z.string(),
+        timeout_seconds: z.number().int().optional(),
+      },
+    },
+    async ({ task_id, timeout_seconds = 120 }) => {
+      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
+      for (;;) {
+        const t = reap(task_id);
+        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) return ok(slim(t));
+        if (Date.now() >= deadline) {
+          return ok({ ...slim(t), timed_out_waiting: true, note: "Still running. Call claude_task_status later." });
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  );
+
+  server.registerTool(
+    "claude_followup",
+    {
+      title: "Follow up in the same Claude session",
+      description:
+        "Send a follow-up into the SAME delegated Claude session as a finished task, so " +
+        "it keeps its context. Use this rather than a fresh claude_delegate whenever the " +
+        "request builds on work it just did.",
+      inputSchema: {
+        task_id: z.string(),
+        prompt: z.string(),
+      },
+    },
+    async ({ task_id, prompt }) =>
+      ok(
+        followupTask({
+          owner: "claude-agent", task_id, prompt, spawn: spawnClaude,
+          buildExtra: (conversationId) => ({ resumeSessionId: conversationId }),
+        })
+      )
+  );
+
+  server.registerTool(
+    "claude_cancel",
+    {
+      title: "Cancel a delegated Claude task",
+      description: "Stop a running delegated Claude task and release any paths it held.",
       inputSchema: { task_id: z.string() },
     },
     async ({ task_id }) => ok(cancelTask(task_id))
