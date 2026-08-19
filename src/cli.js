@@ -7,9 +7,11 @@
  * stderr or the protocol breaks.
  */
 
+import { spawn } from "node:child_process";
 import { runStdio } from "./server.js";
 import { init, printInit } from "./init.js";
 import { doctor, printDoctor } from "./doctor.js";
+import { startUiServer, DEFAULT_UI_PORT } from "./uiServer.js";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] && !argv[0].startsWith("-") ? argv[0] : "serve";
@@ -24,6 +26,7 @@ const HELP = `
 
   Usage
     antigravity-mcp-server                 Run the MCP server on stdio (how clients launch it)
+    antigravity-mcp-server ui              Open the office visualization (agents, tasks, board)
     antigravity-mcp-server init            Register the server into every MCP client found
     antigravity-mcp-server doctor          Check that every link in the chain works
     antigravity-mcp-server --help
@@ -38,13 +41,26 @@ const HELP = `
   doctor options
     --probe         Also run a live agy round trip (slower, uses agy quota)
 
+  ui options
+    --port <n>      Port to serve on (default ${DEFAULT_UI_PORT})
+    --open          Open the URL in your default browser
+
   serve options
     --agent <id>    Identity this instance uses on the shared board
 
   Environment
     AGY_BIN                 Path to the agy binary
+    COPILOT_BIN              Path to the copilot binary
+    CLAUDE_BIN               Path to the claude binary
     ANTIGRAVITY_MCP_HOME    Shared board location (default ~/.antigravity-mcp)
 `;
+
+function openInBrowser(url) {
+  const platform = process.platform;
+  const cmd = platform === "win32" ? "start" : platform === "darwin" ? "open" : "xdg-open";
+  const args = platform === "win32" ? ["", url] : [url];
+  spawn(cmd, args, { shell: platform === "win32", stdio: "ignore", detached: true }).unref();
+}
 
 async function main() {
   if (has("--help") || has("-h") || cmd === "help") {
@@ -67,6 +83,25 @@ async function main() {
     }
     case "doctor": {
       process.exitCode = printDoctor(doctor({ probe: has("--probe") })) ? 1 : 0;
+      return;
+    }
+    case "ui": {
+      const portArg = valueOf("--port");
+      const port = portArg ? Number(portArg) : DEFAULT_UI_PORT;
+      try {
+        await startUiServer({ port });
+      } catch (e) {
+        if (e.code === "EADDRINUSE") {
+          console.error(`Port ${port} is already in use. Pick another with --port, or something's already running here.`);
+          process.exitCode = 1;
+          return;
+        }
+        throw e;
+      }
+      const url = `http://localhost:${port}`;
+      console.log(`Agent Office running at ${url}`);
+      console.log("Press Ctrl+C to stop.");
+      if (has("--open")) openInBrowser(url);
       return;
     }
     case "serve":

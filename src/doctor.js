@@ -1,10 +1,14 @@
 /** `antigravity-mcp-server doctor` — check every link in the chain and say what is broken. */
 
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CLIENTS, AGY_SETTINGS, serverKey } from "./clients.js";
 import { findAgy } from "./agy.js";
 import { stateDir, mutate, read } from "./store.js";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const PASS = "ok", FAIL = "FAIL", WARN = "warn";
 
@@ -45,6 +49,13 @@ export function doctor({ probe = false } = {}) {
   } catch (e) {
     add("shared board", FAIL, `${stateDir()} — ${e.message}`);
   }
+
+  const uiDist = path.join(HERE, "..", "ui-dist", "index.html");
+  add(
+    "ui build",
+    fs.existsSync(uiDist) ? PASS : FAIL,
+    fs.existsSync(uiDist) ? "ui-dist present" : "missing — run: npm run ui:build"
+  );
 
   for (const c of CLIENTS) {
     if (!fs.existsSync(c.file)) continue;

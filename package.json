@@ -1,7 +1,7 @@
 {
   "name": "antigravity-mcp-server",
-  "version": "0.3.0",
-  "description": "MCP server that lets any AI coding agent delegate work to the Antigravity CLI (agy), the GitHub Copilot CLI, or another Claude Code instance, and coordinate with them through a shared task board, path locks, and notes.",
+  "version": "0.4.0",
+  "description": "MCP server that lets any AI coding agent delegate work to the Antigravity CLI (agy), the GitHub Copilot CLI, or another Claude Code instance, coordinate with them through a shared task board, and visualize them live in a bundled retro-office UI.",
   "type": "module",
   "bin": {
     "antigravity-mcp-server": "src/cli.js"
@@ -12,13 +12,17 @@
   },
   "files": [
     "src",
+    "ui-dist",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "start": "node src/cli.js",
     "doctor": "node src/cli.js doctor",
-    "test": "node test/smoke.js"
+    "ui": "node src/cli.js ui",
+    "test": "node test/smoke.js",
+    "ui:build": "cd ui && npm install && npm run build",
+    "prepublishOnly": "npm run ui:build"
   },
   "keywords": [
     "mcp",
@@ -33,7 +37,9 @@
     "ai-agents",
     "multi-agent",
     "delegation",
-    "orchestration"
+    "orchestration",
+    "dashboard",
+    "visualization"
   ],
   "license": "MIT",
   "engines": {
@@ -41,6 +47,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
   "repository": {

@@ -101,6 +101,26 @@ can't hand work to that one.
 
 ---
 
+## Watch it — the office UI
+
+```bash
+antigravity-mcp-server ui
+```
+
+Opens a retro pixel-art office at `http://localhost:49321` (an uncommon port,
+picked to avoid colliding with whatever else you have running) — one desk per
+agent identity, live status, current task, and who's delegating to whom, all
+driven by the same board the tools above write to. `--port <n>` to use a
+different one, `--open` to launch your browser automatically.
+
+It's one process, one port: the server serves the built UI *and* the
+WebSocket feed together, so `npm install -g antigravity-mcp-server` is the
+whole install — nothing extra to run. No agents connected yet? It falls back
+to a self-contained demo after a couple of seconds, so the page is never just
+blank.
+
+---
+
 ## How you use it
 
 You don't learn any commands. You just talk to your agent:

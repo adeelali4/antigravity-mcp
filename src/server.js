@@ -201,6 +201,21 @@ function cancelTask(task_id) {
 
 export function buildServer() {
   ensureDirs();
+
+  // Heartbeat: MCP gives no onDisconnect hook, so a live consumer (e.g. a UI
+  // bridge watching the board) has no way to tell "connected but idle" apart
+  // from "process exited without a clean disconnect" -- recency of this
+  // timestamp is the signal. Touches presence on startup and every 15s.
+  const touchPresence = () => {
+    mutate((b) => {
+      const existing = b.presence[AGENT];
+      b.presence[AGENT] = { status: existing?.status ?? "idle", detail: existing?.detail ?? "", ts: Date.now() };
+    });
+  };
+  touchPresence();
+  const heartbeat = setInterval(touchPresence, 15000);
+  if (typeof heartbeat.unref === "function") heartbeat.unref();
+
   const server = new McpServer(
     { name: "antigravity", version: "0.1.0" },
     {

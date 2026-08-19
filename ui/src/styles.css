@@ -1,0 +1,375 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #14162200;
+  background-color: #10111c;
+  color: #e8ecff;
+  font-family: "Courier New", ui-monospace, monospace;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 14px;
+  gap: 12px;
+}
+
+.app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.app-header h1 {
+  margin: 0 0 2px;
+  font-size: 20px;
+  letter-spacing: 1px;
+}
+.app-header p {
+  margin: 0;
+  font-size: 12px;
+  color: #8b91b8;
+}
+
+.mode-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: #171a28;
+  border: 1px solid #262b40;
+  white-space: nowrap;
+}
+.mode-badge .mode-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5a5f78;
+}
+.mode-badge.live .mode-dot {
+  background: #4ade80;
+  box-shadow: 0 0 6px #4ade80aa;
+}
+.mode-badge.demo .mode-dot {
+  background: #facc15;
+}
+.mode-detail {
+  color: #8b91b8;
+  font-size: 11px;
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+}
+
+.app-office {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.office-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.office-canvas {
+  width: 100%;
+  height: 100%;
+  max-width: 960px;
+  max-height: 600px;
+  aspect-ratio: 960 / 600;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #1b1f30;
+  border: 3px solid #3a4166;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.office-tooltip {
+  position: fixed;
+  z-index: 40;
+  background: #171a28;
+  border: 1px solid #3a4166;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  pointer-events: none;
+  max-width: 220px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.office-tooltip strong {
+  display: block;
+  font-size: 13px;
+}
+.office-tooltip-status {
+  color: #8b91b8;
+  text-transform: capitalize;
+}
+.office-tooltip-task {
+  margin-top: 3px;
+  color: #c7cbe8;
+}
+
+/* ---------------------------------------------------------------- sidebar */
+
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: #171a28;
+  border: 1px solid #262b40;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 10px 12px;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #8b91b8;
+  border-bottom: 1px solid #262b40;
+  display: flex;
+  justify-content: space-between;
+}
+.sidebar-count {
+  color: #4ade80;
+}
+
+.sidebar-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.sidebar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sidebar-row:hover {
+  background: #1f2436;
+}
+.sidebar-row.selected {
+  background: #262c4a;
+}
+.sidebar-row.disconnected {
+  opacity: 0.5;
+}
+
+.sidebar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sidebar-row-name {
+  font-size: 13px;
+}
+.sidebar-row-sub {
+  font-size: 11px;
+  color: #8b91b8;
+  text-transform: lowercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.sidebar-empty {
+  padding: 12px;
+  color: #5a5f78;
+  font-size: 12px;
+}
+
+/* ----------------------------------------------------------- detail panel */
+
+.detail-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 240px;
+  background: #171a28ee;
+  border: 1px solid #3a4166;
+  border-radius: 8px;
+  padding: 12px;
+  backdrop-filter: blur(4px);
+  z-index: 20;
+}
+
+.detail-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: #8b91b8;
+  font-size: 16px;
+  cursor: pointer;
+}
+.detail-close:hover {
+  color: #fff;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.detail-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.detail-name {
+  font-size: 14px;
+  font-weight: bold;
+}
+.detail-conn {
+  font-size: 11px;
+  color: #8b91b8;
+  text-transform: capitalize;
+}
+
+.detail-fields {
+  margin: 0;
+  font-size: 12px;
+}
+.detail-fields dt {
+  color: #8b91b8;
+  margin-top: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.detail-fields dd {
+  margin: 2px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.detail-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.detail-muted {
+  color: #5a5f78;
+}
+
+/* ------------------------------------------------------------ debug panel */
+
+.debug-panel {
+  position: fixed;
+  bottom: 14px;
+  right: 14px;
+  z-index: 50;
+  font-size: 12px;
+}
+
+.debug-toggle {
+  background: #262b40;
+  color: #e8ecff;
+  border: 1px solid #3a4166;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.debug-body {
+  margin-top: 8px;
+  background: #171a28;
+  border: 1px solid #3a4166;
+  border-radius: 8px;
+  padding: 10px;
+  width: 300px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.debug-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #8b91b8;
+}
+
+.debug-row {
+  display: flex;
+  gap: 6px;
+}
+.debug-row.wrap {
+  flex-wrap: wrap;
+}
+
+.debug-panel select,
+.debug-panel input,
+.debug-panel button {
+  background: #1f2436;
+  color: #e8ecff;
+  border: 1px solid #3a4166;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: inherit;
+}
+.debug-panel button {
+  cursor: pointer;
+}
+.debug-panel button:hover {
+  background: #2a3050;
+}
+.debug-panel button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.debug-panel input {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 860px) {
+  .app-body {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    max-height: 160px;
+  }
+}
