@@ -73,15 +73,15 @@ export const CLIENTS = [
     key: "mcp",
     shape: "opencode",
   },
-  // Antigravity itself — registered as the worker side, with agent id
-  // "antigravity". Two files: the CLI (agy) and the IDE read different configs.
+  // Antigravity itself — registered as a worker, with agent id "antigravity".
+  // Two files: the CLI (agy) and the IDE read different configs.
   {
     id: "antigravity-cli",
     label: "Antigravity CLI (agy)",
     file: path.join(HOME, ".gemini", "config", "mcp_config.json"),
     key: "mcpServers",
     shape: "standard",
-    worker: true,
+    workerAgent: "antigravity",
   },
   {
     id: "antigravity-ide",
@@ -89,19 +89,33 @@ export const CLIENTS = [
     file: path.join(HOME, ".gemini", "antigravity-ide", "mcp_config.json"),
     key: "mcpServers",
     shape: "standard",
-    worker: true,
+    workerAgent: "antigravity",
+  },
+  // GitHub Copilot CLI — also a worker, agent id "copilot". Its own `copilot
+  // mcp add` command writes this exact shape, so this mirrors that rather
+  // than shelling out to a binary that may not be on PATH at init time.
+  {
+    id: "copilot-cli",
+    label: "GitHub Copilot CLI",
+    file: path.join(HOME, ".copilot", "mcp-config.json"),
+    key: "mcpServers",
+    shape: "copilot",
+    workerAgent: "copilot",
   },
 ];
 
 /** agy refuses MCP calls in headless mode unless allow-listed here. */
 export const AGY_SETTINGS = path.join(HOME, ".gemini", "antigravity-cli", "settings.json");
 
-/** Server key: peers see "antigravity"; Antigravity sees the board as "coop". */
-export const serverKey = (client) => (client.worker ? "coop" : "antigravity");
+/** Server key: peers see "antigravity"; the worker side sees the board as "coop". */
+export const serverKey = (client) => (client.workerAgent ? "coop" : "antigravity");
 
 export function entryFor(client, command, args, shape = client.shape) {
   if (shape === "opencode") {
     return { type: "local", command: [command, ...args], enabled: true };
+  }
+  if (shape === "copilot") {
+    return { type: "local", command, args, tools: ["*"] };
   }
   return { command, args };
 }

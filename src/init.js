@@ -116,7 +116,7 @@ export function init({ dryRun = false, launchMode = "auto", only = null, all = f
     }
 
     const key = serverKey(client);
-    const agentId = client.worker ? "antigravity" : client.id;
+    const agentId = client.workerAgent || client.id;
     let cfg;
     try {
       cfg = readJson(client.file);

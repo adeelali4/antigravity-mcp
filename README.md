@@ -305,6 +305,7 @@ invisible to each other, which defeats the whole point.
 | OpenCode | `~/.config/opencode/opencode.json` | `mcp` |
 | Antigravity CLI | `~/.gemini/config/mcp_config.json` | `mcpServers` |
 | Antigravity IDE | `~/.gemini/antigravity-ide/mcp_config.json` | `mcpServers` |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `mcpServers` |
 
 ---
 

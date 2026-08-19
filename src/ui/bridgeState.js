@@ -4,6 +4,8 @@
  * polling loop and the actual WebSocket broadcast.
  */
 
+import { isAlive } from "../proc.js";
+
 /** An agent whose presence heartbeat (or active task) is older than this reads as disconnected. */
 const STALE_MS = 45_000;
 
@@ -42,19 +44,33 @@ export function computeAgents(board) {
     if (n.from && !info.has(n.from)) info.set(n.from, { status: "idle", detail: "", ts: n.created });
   }
 
+  // Worker id -> its most-recently-updated genuinely-alive running task.
   const runningByOwner = new Map();
   for (const t of board.tasks || []) {
-    if (t.kind === "delegated" && (t.status === "running" || t.status === "queued")) {
-      const prev = runningByOwner.get(t.owner);
-      if (!prev || (t.updated ?? 0) > (prev.updated ?? 0)) runningByOwner.set(t.owner, t);
-    }
+    if (t.kind !== "delegated" || (t.status !== "running" && t.status !== "queued")) continue;
+    // The stored status only gets reconciled when something actively polls
+    // this task again (ag_task_status/ag_task_wait/coop_status) -- if nobody
+    // does, a task whose process already died stays "running" in the board
+    // forever. Trusting that blindly is exactly what made the UI show fake,
+    // permanent activity, so verify the process is actually still alive.
+    if (!isAlive(t.pid)) continue;
+    const prev = runningByOwner.get(t.owner);
+    if (!prev || (t.updated ?? 0) > (prev.updated ?? 0)) runningByOwner.set(t.owner, t);
+  }
+
+  // The delegator's own status/task stay theirs -- delegating doesn't change
+  // what THEY'RE doing, only where they are and who they're paired with.
+  const delegatorPartner = new Map(); // assignedBy id -> worker id it's currently visiting
+  for (const t of runningByOwner.values()) {
+    if (t.assignedBy) delegatorPartner.set(t.assignedBy, t.owner);
   }
 
   const agents = [];
   for (const id of Array.from(info.keys()).sort()) {
     const p = info.get(id);
     const running = runningByOwner.get(id);
-    const lastTs = Math.max(p.ts || 0, running?.updated || 0, running?.created || 0);
+    const visiting = delegatorPartner.get(id);
+    const lastTs = Math.max(p.ts || 0, running?.updated || 0);
     agents.push({
       id,
       name: humanize(id),
@@ -63,7 +79,10 @@ export function computeAgents(board) {
       // presence_set was never called for this identity.
       status: running ? "working" : p.status || "idle",
       task: running ? running.title : p.detail || null,
-      interactingWith: running ? running.assignedBy : null,
+      interactingWith: running ? running.assignedBy : visiting || null,
+      // "home" is a sentinel the store resolves to this agent's own sticky
+      // desk -- the bridge has no idea what desk id that is, nor should it.
+      location: running || visiting ? "meeting" : "home",
     });
   }
   return agents;
@@ -74,6 +93,7 @@ export function toEvents(id, agent) {
   if (!agent.connected) events.push({ type: "AGENT_DISCONNECTED", agentId: id });
   if (agent.status !== "idle") events.push({ type: "AGENT_STATUS_CHANGED", agentId: id, status: agent.status });
   if (agent.task) events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task });
+  if (agent.location !== "home") events.push({ type: "AGENT_LOCATION_CHANGED", agentId: id, location: agent.location });
   if (agent.interactingWith) {
     events.push({ type: "AGENT_INTERACTION_STARTED", agentId: id, withAgentId: agent.interactingWith });
   }
@@ -100,6 +120,9 @@ export function diffAgents(prevMap, nextList) {
     }
     if (prev.status !== agent.status) events.push({ type: "AGENT_STATUS_CHANGED", agentId: id, status: agent.status });
     if (prev.task !== agent.task) events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task });
+    if (prev.location !== agent.location) {
+      events.push({ type: "AGENT_LOCATION_CHANGED", agentId: id, location: agent.location });
+    }
     if (prev.interactingWith !== agent.interactingWith) {
       if (prev.interactingWith) events.push({ type: "AGENT_INTERACTION_ENDED", agentId: id });
       if (agent.interactingWith) {

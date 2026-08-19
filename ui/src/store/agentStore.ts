@@ -31,6 +31,15 @@ function assignDesk(agentId: string, deskAssignments: Record<string, string>): s
   return nextOverflowId(n);
 }
 
+/**
+ * "home" is a sentinel any event source can use to mean "this agent's own
+ * desk" without needing to know its literal id -- the live bridge relies on
+ * this since desk assignment is entirely a frontend concept.
+ */
+function resolveLocation(location: string, agentId: string, deskAssignments: Record<string, string>): string {
+  return location === "home" ? assignDesk(agentId, deskAssignments) : location;
+}
+
 export const useAgentStore = create<AgentStoreState>((set, get) => ({
   agents: {},
   deskAssignments: {},
@@ -65,7 +74,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
             status: prior?.status ?? "idle",
             currentTask: prior?.currentTask ?? null,
             // Reconnect resumes at its desk rather than wherever it was mid-walk.
-            location: event.location ?? desk,
+            location: event.location ? resolveLocation(event.location, event.agentId, deskAssignments) : desk,
             targetLocation: null,
             interaction: null,
             lastUpdated: now,
@@ -86,7 +95,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           break;
         }
         case "AGENT_LOCATION_CHANGED": {
-          touch(event.agentId, { targetLocation: event.location, location: event.location });
+          const resolved = resolveLocation(event.location, event.agentId, deskAssignments);
+          touch(event.agentId, { targetLocation: resolved, location: resolved });
           break;
         }
         case "AGENT_INTERACTION_STARTED": {
