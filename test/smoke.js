@@ -38,7 +38,7 @@ const alice = await connect("claude");
 const bob = await connect("antigravity");
 
 const tools = (await alice.listTools()).tools;
-check("stdio handshake + tools/list", tools.length === 17, `${tools.length} tools`);
+check("stdio handshake + tools/list", tools.length === 22, `${tools.length} tools`);
 check("every tool documented", tools.every((t) => t.description?.length > 40));
 
 // Path locks must hold across two separate server processes.

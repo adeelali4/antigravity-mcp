@@ -3,26 +3,57 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { CLIENTS, AGY_SETTINGS, serverKey, entryFor } from "./clients.js";
 import { findAgy } from "./agy.js";
 
+const WIN = process.platform === "win32";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, "cli.js");
 
+const PKG = JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8"));
 /** Read from package.json so renaming the package needs no edits here. */
-const PKG_NAME = JSON.parse(
-  fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8")
-).name;
+const PKG_NAME = PKG.name;
+const BIN_NAME = Object.keys(PKG.bin || {})[0] || PKG_NAME;
 
 /**
- * Published installs launch via npx so they track the latest version; a checkout
- * running outside node_modules launches by absolute path, which is the only form
- * that works before the package is on the registry.
+ * A bin resolved from an npx cache (~/.npm/_npx/... or a temp dir) is not a
+ * real global install -- it is this very invocation's throwaway copy.
+ */
+function isNpxCache(resolved) {
+  return /[\\/](_npx|npm-cache)[\\/]/.test(resolved) || /[\\/]Temp[\\/]/i.test(resolved);
+}
+
+function findGlobalBin() {
+  try {
+    const probe = spawnSync(WIN ? "where" : "which", [BIN_NAME], { encoding: "utf8" });
+    const hit = (probe.stdout || "").split(/\r?\n/).find((l) => l.trim());
+    if (!hit) return null;
+    const resolved = hit.trim();
+    return isNpxCache(resolved) ? null : resolved;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prefer a real global install -- it starts instantly and only changes
+ * version when the user explicitly updates it, instead of npx silently
+ * pulling latest on every launch (which can skew the two agents' protocol
+ * versions if only one side has restarted). Fall back to npx so a bare
+ * `npx antigravity-mcp-server init`, with nothing installed yet, still
+ * works. A checkout running outside node_modules launches by absolute path,
+ * the only form that works before the package is on the registry at all.
  */
 function launcher(mode) {
+  if (mode === "global") return { command: BIN_NAME, args: [] };
+  if (mode === "npx") return { command: "npx", args: ["-y", PKG_NAME] };
+  if (mode === "local") return { command: process.execPath, args: [CLI] };
+
+  const globalBin = findGlobalBin();
+  if (globalBin) return { command: BIN_NAME, args: [] };
   const installed = HERE.includes(`${path.sep}node_modules${path.sep}`);
-  const useNpx = mode === "npx" || (mode !== "local" && installed);
-  return useNpx
+  return installed
     ? { command: "npx", args: ["-y", PKG_NAME] }
     : { command: process.execPath, args: [CLI] };
 }
@@ -119,7 +150,8 @@ export function init({ dryRun = false, launchMode = "auto", only = null, all = f
 
 export function printInit(res) {
   const touched = res.results.filter((r) => r.status !== "skipped");
-  console.log(`\n  antigravity-mcp-server — launching via: ${res.command} ${res.args.join(" ")}\n`);
+  const via = res.command === "npx" ? `${res.command} ${res.args.join(" ")}` : res.command;
+  console.log(`\n  antigravity-mcp-server — launching via: ${via}\n`);
   for (const r of res.results) {
     const mark = r.status === "error" ? "x" : r.status === "skipped" ? "-" : "+";
     console.log(`  ${mark} ${r.client.padEnd(22)} ${r.status.padEnd(12)} ${r.detail}`);
@@ -132,6 +164,12 @@ export function printInit(res) {
       "\n  ! Antigravity CLI (agy) was not found, so delegation will fail.\n" +
         "    Install Antigravity, or set AGY_BIN to the agy binary path.\n" +
         "    Coordination tools still work without it."
+    );
+  }
+  if (res.command === "npx") {
+    console.log(
+      `\n  Using npx, so every launch re-checks the registry. For instant startup:\n` +
+        `    npm install -g ${PKG_NAME} && ${BIN_NAME} init\n`
     );
   }
   if (touched.length) {

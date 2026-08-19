@@ -29,10 +29,11 @@ const HELP = `
     antigravity-mcp-server --help
 
   init options
-    --dry-run       Show what would change, write nothing
-    --all           Also write configs for clients that are not installed
-    --only <ids>    Comma-separated client ids (e.g. claude-code,cursor)
-    --npx | --local Force the launch form written into configs
+    --dry-run                 Show what would change, write nothing
+    --all                     Also write configs for clients that are not installed
+    --only <ids>              Comma-separated client ids (e.g. claude-code,cursor)
+    --global | --npx | --local  Force the launch form written into configs
+                               (default: auto-detects a global install, else npx)
 
   doctor options
     --probe         Also run a live agy round trip (slower, uses agy quota)
@@ -59,7 +60,7 @@ async function main() {
           dryRun: has("--dry-run"),
           all: has("--all"),
           only: only ? only.split(",").map((s) => s.trim()) : null,
-          launchMode: has("--npx") ? "npx" : has("--local") ? "local" : "auto",
+          launchMode: has("--global") ? "global" : has("--npx") ? "npx" : has("--local") ? "local" : "auto",
         })
       );
       return;

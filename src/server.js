@@ -1,12 +1,14 @@
 /**
  * antigravity-mcp-server — an MCP server that does two things:
  *
- *  1. Delegation: runs the Antigravity CLI (`agy`) headlessly as a detached
- *     background job, so the calling agent hands off work and keeps going.
+ *  1. Delegation: runs the Antigravity CLI (`agy`) or the GitHub Copilot CLI
+ *     (`copilot`) headlessly as a detached background job, so the calling
+ *     agent hands off work and keeps going.
  *  2. Coordination: a shared board (tasks, path locks, notes, presence) that
- *     both agents connect to, so neither walks into the other's files.
+ *     every connected agent shares, so none of them walk into each other's
+ *     files.
  *
- * The same executable is registered on both sides with a different `--agent`
+ * The same executable is registered on every side with a different `--agent`
  * id; that id is the identity everything on the board is attributed to.
  */
 
@@ -18,9 +20,21 @@ import { z } from "zod";
 import {
   mutate, read, ago, norm, overlaps, logEvent, nextId, taskId, ensureDirs,
 } from "./store.js";
+import { isAlive, killTree } from "./proc.js";
+import { spawnAgy, readResult as readAgyResult, readStderr as readAgyStderr, findAgy } from "./agy.js";
 import {
-  spawnAgy, isAlive, killTree, readResult, readStderr, findAgy,
-} from "./agy.js";
+  spawnCopilot, readResult as readCopilotResult, readStderr as readCopilotStderr, findCopilot,
+} from "./copilot.js";
+
+/**
+ * One entry per delegation target, keyed by the `owner` string recorded on the
+ * task -- that string doubles as the backend selector so reap() does not need
+ * a second field to stay in sync with `owner`.
+ */
+const BACKENDS = {
+  antigravity: { findBin: findAgy, spawn: spawnAgy, readResult: readAgyResult, readStderr: readAgyStderr },
+  copilot: { findBin: findCopilot, spawn: spawnCopilot, readResult: readCopilotResult, readStderr: readCopilotStderr },
+};
 
 export const AGENT = (() => {
   const i = process.argv.indexOf("--agent");
@@ -33,8 +47,9 @@ const ok = (obj) => ({
 });
 
 /**
- * Reconcile a delegated task with what agy actually left on disk. Called before
- * any read of task state, which is what makes status survive a server restart.
+ * Reconcile a delegated task with what its backend actually left on disk.
+ * Called before any read of task state, which is what makes status survive a
+ * server restart.
  */
 function reap(id) {
   const board = read();
@@ -42,7 +57,8 @@ function reap(id) {
   if (!t) return { error: `no such task: ${id}` };
   if (t.kind !== "delegated" || !["running", "queued"].includes(t.status)) return t;
 
-  const payload = readResult(id);
+  const backend = BACKENDS[t.owner];
+  const payload = backend?.readResult(id);
   if (payload) {
     return mutate((b) => {
       const task = b.tasks.find((x) => x.id === id);
@@ -61,7 +77,7 @@ function reap(id) {
     return mutate((b) => {
       const task = b.tasks.find((x) => x.id === id);
       task.status = "failed";
-      task.error = readStderr(id) || "agy exited without producing JSON output";
+      task.error = backend?.readStderr(id) || `${t.owner} exited without producing output`;
       task.updated = Date.now();
       logEvent(b, AGENT, "task.failed", `${id} ${task.title}`);
       return task;
@@ -76,19 +92,121 @@ function slim(t) {
   return { ...rest, age: ago(t.created) };
 }
 
+/**
+ * Shared core of every `*_delegate` tool: validate cwd + bin, check for path
+ * conflicts, spawn, and record the task + locks + presence on the board.
+ */
+function delegateTask({ owner, id, briefing, cwd, model, spawnExtra, claim, findBin, spawn, title, prompt }) {
+  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+    return { error: `cwd is not a directory: ${cwd}` };
+  }
+  try {
+    findBin();
+  } catch (e) {
+    return { error: e.message };
+  }
+
+  const conflicts = read().locks
+    .filter((l) => l.owner !== owner && claim.some((c) => overlaps(c, l.path)))
+    .map((l) => ({ path: l.path, held_by: l.owner }));
+  if (conflicts.length) return { error: "path conflict; resolve before delegating", conflicts };
+
+  let pid;
+  try {
+    pid = spawn(id, briefing, { cwd, ...spawnExtra });
+  } catch (e) {
+    return { error: `failed to launch ${owner}: ${e.message}` };
+  }
+
+  mutate((b) => {
+    const now = Date.now();
+    b.tasks.push({
+      id, title, detail: prompt, owner, assignedBy: AGENT,
+      status: "running", cwd, kind: "delegated", pid, created: now, updated: now,
+    });
+    for (const p of claim) {
+      b.locks = b.locks.filter((l) => l.path !== p);
+      b.locks.push({ path: p, owner, taskId: id, note: title, created: now });
+    }
+    b.presence[owner] = { status: "working", detail: title, ts: now };
+    logEvent(b, AGENT, "task.delegated", `${id} ${title}`);
+  });
+
+  return {
+    task_id: id, status: "running", pid, cwd, claimed: claim,
+    next: `Keep working on your own part; check ${owner === "antigravity" ? "ag" : owner}_task_status(task_id) later.`,
+  };
+}
+
+function briefingFor(owner, cwd, claim, prompt) {
+  return (
+    `PROJECT ROOT: ${cwd}\n` +
+    `Do all work inside that directory using absolute paths. Do not create a scratch project elsewhere.\n` +
+    `You are the '${owner}' agent working in parallel with another AI agent on this project. ` +
+    `It has assigned you the task below and is working on other parts of the codebase at the same time.\n` +
+    (claim.length ? `PATHS RESERVED FOR YOU: ${claim.join(", ")}\n` : "") +
+    `If the coordination MCP server is available to you, call coop_status first and ` +
+    `claim_paths before editing; stay off paths another agent holds.\n\n--- TASK ---\n${prompt}`
+  );
+}
+
+function followupTask({ owner, task_id, prompt, spawn, buildExtra }) {
+  const parent = reap(task_id);
+  if (parent.error) return parent;
+  if (["running", "queued"].includes(parent.status)) {
+    return { error: `task ${task_id} is still running; wait for it before following up` };
+  }
+  if (!parent.conversationId) {
+    return { error: `task ${task_id} has no conversation_id (status=${parent.status})` };
+  }
+  const id = taskId();
+  let pid;
+  try {
+    pid = spawn(id, prompt, { cwd: parent.cwd, ...buildExtra(parent.conversationId) });
+  } catch (e) {
+    return { error: `failed to launch ${owner}: ${e.message}` };
+  }
+  mutate((b) => {
+    const now = Date.now();
+    b.tasks.push({
+      id, title: `follow-up: ${parent.title}`, detail: prompt, owner,
+      assignedBy: AGENT, status: "running", cwd: parent.cwd, kind: "delegated",
+      conversationId: parent.conversationId, pid, created: now, updated: now,
+    });
+    logEvent(b, AGENT, "task.followup", `${id} <- ${task_id}`);
+  });
+  return { task_id: id, status: "running", conversation_id: parent.conversationId, pid };
+}
+
+function cancelTask(task_id) {
+  const t = read().tasks.find((x) => x.id === task_id);
+  if (!t) return { error: `no such task: ${task_id}` };
+  killTree(t.pid);
+  mutate((b) => {
+    const task = b.tasks.find((x) => x.id === task_id);
+    task.status = "cancelled";
+    task.updated = Date.now();
+    b.locks = b.locks.filter((l) => l.taskId !== task_id);
+    logEvent(b, AGENT, "task.cancelled", task_id);
+  });
+  return { task_id, status: "cancelled", released_locks: true };
+}
+
 export function buildServer() {
   ensureDirs();
   const server = new McpServer(
     { name: "antigravity", version: "0.1.0" },
     {
       instructions:
-        "Shared coordination channel with the Antigravity CLI (agy), plus the " +
-        "ability to delegate work to it headlessly.\n\n" +
+        "Shared coordination channel with the Antigravity CLI (agy) and the GitHub " +
+        "Copilot CLI (copilot), plus the ability to delegate work to either headlessly.\n\n" +
         "Working agreement:\n" +
         "- Call coop_status at the start of a work session and before touching files.\n" +
         "- Call claim_paths on files you are about to edit, release_paths when done.\n" +
         "- Never edit a path another agent holds; send a note instead.\n" +
-        "- Typical split: the calling agent owns backend/API/data, Antigravity owns UI/UX.",
+        "- No fixed split: a delegated agent can be handed any kind of task -- backend, " +
+        "tests, docs, a refactor -- not just UI/UX. Split along whatever contract fits " +
+        "the actual feature.",
     }
   );
 
@@ -162,58 +280,20 @@ export function buildServer() {
     },
     async (a) => {
       const cwd = path.resolve(a.cwd);
-      if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
-        return ok({ error: `cwd is not a directory: ${cwd}` });
-      }
-      try { findAgy(); } catch (e) { return ok({ error: e.message }); }
-
       const claim = (a.claim || []).map(norm);
-      const conflicts = read().locks
-        .filter((l) => l.owner !== "antigravity" && claim.some((c) => overlaps(c, l.path)))
-        .map((l) => ({ path: l.path, held_by: l.owner }));
-      if (conflicts.length) {
-        return ok({ error: "path conflict; resolve before delegating", conflicts });
-      }
-
       const id = taskId();
-      const briefing =
-        `PROJECT ROOT: ${cwd}\n` +
-        `Do all work inside that directory using absolute paths. Do not create a scratch project elsewhere.\n` +
-        `You are the 'antigravity' agent working in parallel with another AI agent on this project. ` +
-        `It has assigned you the task below and is working on other parts of the codebase at the same time.\n` +
-        (claim.length ? `PATHS RESERVED FOR YOU: ${claim.join(", ")}\n` : "") +
-        `If the coordination MCP server is available to you, call coop_status first and ` +
-        `claim_paths before editing; stay off paths another agent holds.\n\n--- TASK ---\n${a.prompt}`;
-
-      let pid;
-      try {
-        pid = spawnAgy(id, briefing, {
-          cwd, model: a.model, mode: a.mode ?? "accept-edits", effort: a.effort,
-          addDirs: a.add_dirs || [], autoApprove: a.auto_approve ?? true,
-          timeoutSeconds: a.timeout_seconds ?? 1800,
-        });
-      } catch (e) {
-        return ok({ error: `failed to launch agy: ${e.message}` });
-      }
-
-      mutate((b) => {
-        const now = Date.now();
-        b.tasks.push({
-          id, title: a.title, detail: a.prompt, owner: "antigravity", assignedBy: AGENT,
-          status: "running", cwd, kind: "delegated", pid, created: now, updated: now,
-        });
-        for (const p of claim) {
-          b.locks = b.locks.filter((l) => l.path !== p);
-          b.locks.push({ path: p, owner: "antigravity", taskId: id, note: a.title, created: now });
-        }
-        b.presence.antigravity = { status: "working", detail: a.title, ts: now };
-        logEvent(b, AGENT, "task.delegated", `${id} ${a.title}`);
-      });
-
-      return ok({
-        task_id: id, status: "running", pid, cwd, claimed: claim,
-        next: "Keep working on your own part; check ag_task_status(task_id) later.",
-      });
+      return ok(
+        delegateTask({
+          owner: "antigravity", id, cwd, claim, title: a.title, prompt: a.prompt,
+          briefing: briefingFor("antigravity", cwd, claim, a.prompt),
+          findBin: findAgy, spawn: spawnAgy,
+          spawnExtra: {
+            model: a.model, mode: a.mode ?? "accept-edits", effort: a.effort,
+            addDirs: a.add_dirs || [], autoApprove: a.auto_approve ?? true,
+            timeoutSeconds: a.timeout_seconds ?? 1800,
+          },
+        })
+      );
     }
   );
 
@@ -276,35 +356,13 @@ export function buildServer() {
         timeout_seconds: z.number().int().optional(),
       },
     },
-    async ({ task_id, prompt, timeout_seconds = 1800 }) => {
-      const parent = reap(task_id);
-      if (parent.error) return ok(parent);
-      if (["running", "queued"].includes(parent.status)) {
-        return ok({ error: `task ${task_id} is still running; wait for it before following up` });
-      }
-      if (!parent.conversationId) {
-        return ok({ error: `task ${task_id} has no conversation_id (status=${parent.status})` });
-      }
-      const id = taskId();
-      let pid;
-      try {
-        pid = spawnAgy(id, prompt, {
-          cwd: parent.cwd, conversationId: parent.conversationId, timeoutSeconds: timeout_seconds,
-        });
-      } catch (e) {
-        return ok({ error: `failed to launch agy: ${e.message}` });
-      }
-      mutate((b) => {
-        const now = Date.now();
-        b.tasks.push({
-          id, title: `follow-up: ${parent.title}`, detail: prompt, owner: "antigravity",
-          assignedBy: AGENT, status: "running", cwd: parent.cwd, kind: "delegated",
-          conversationId: parent.conversationId, pid, created: now, updated: now,
-        });
-        logEvent(b, AGENT, "task.followup", `${id} <- ${task_id}`);
-      });
-      return ok({ task_id: id, status: "running", conversation_id: parent.conversationId, pid });
-    }
+    async ({ task_id, prompt, timeout_seconds = 1800 }) =>
+      ok(
+        followupTask({
+          owner: "antigravity", task_id, prompt, spawn: spawnAgy,
+          buildExtra: (conversationId) => ({ conversationId, timeoutSeconds: timeout_seconds }),
+        })
+      )
   );
 
   server.registerTool(
@@ -314,19 +372,129 @@ export function buildServer() {
       description: "Stop a running delegated Antigravity task and release any paths it held.",
       inputSchema: { task_id: z.string() },
     },
-    async ({ task_id }) => {
-      const t = read().tasks.find((x) => x.id === task_id);
-      if (!t) return ok({ error: `no such task: ${task_id}` });
-      killTree(t.pid);
-      mutate((b) => {
-        const task = b.tasks.find((x) => x.id === task_id);
-        task.status = "cancelled";
-        task.updated = Date.now();
-        b.locks = b.locks.filter((l) => l.taskId !== task_id);
-        logEvent(b, AGENT, "task.cancelled", task_id);
-      });
-      return ok({ task_id, status: "cancelled", released_locks: true });
+    async ({ task_id }) => ok(cancelTask(task_id))
+  );
+
+  server.registerTool(
+    "copilot_delegate",
+    {
+      title: "Delegate a task to GitHub Copilot CLI",
+      description:
+        "Hand a task to the GitHub Copilot CLI (`copilot`). Starts it headlessly as a " +
+        "detached background job and returns immediately with a task_id -- it does NOT " +
+        "block, so keep working on your own part meanwhile.\n\n" +
+        "Write `prompt` as a complete, self-contained brief: Copilot cannot see your " +
+        "conversation or your context. State the goal, the stack and conventions actually " +
+        "in use, the files it owns, what it must NOT touch, and the API/prop contract it " +
+        "must code against.\n\n" +
+        "`claim` locks paths for Copilot up front so you stay off them. `auto_approve` " +
+        "passes --allow-all-tools so it can edit unattended. Unlike agy, copilot has no " +
+        "session-level timeout -- a hung job just stays 'running' until it exits or " +
+        "copilot_cancel kills it.",
+      inputSchema: {
+        title: z.string().describe("Short label for the board"),
+        prompt: z.string().describe("Self-contained brief; Copilot starts cold"),
+        cwd: z.string().describe("Absolute path to the project root"),
+        model: z.string().optional().describe("e.g. gpt-5.4, claude-sonnet-5; 'auto' lets Copilot pick"),
+        effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+        add_dirs: z.array(z.string()).optional(),
+        claim: z.array(z.string()).optional().describe("Paths Copilot will own"),
+        auto_approve: z.boolean().optional(),
+      },
+    },
+    async (a) => {
+      const cwd = path.resolve(a.cwd);
+      const claim = (a.claim || []).map(norm);
+      const id = taskId();
+      return ok(
+        delegateTask({
+          owner: "copilot", id, cwd, claim, title: a.title, prompt: a.prompt,
+          briefing: briefingFor("copilot", cwd, claim, a.prompt),
+          findBin: findCopilot, spawn: spawnCopilot,
+          spawnExtra: {
+            model: a.model, effort: a.effort,
+            addDirs: a.add_dirs || [], autoApprove: a.auto_approve ?? true,
+          },
+        })
+      );
     }
+  );
+
+  server.registerTool(
+    "copilot_task_status",
+    {
+      title: "Check a delegated Copilot task",
+      description:
+        "Check a delegated Copilot task: running / done / failed, plus its final " +
+        "response and conversation_id (Copilot session id) once finished.",
+      inputSchema: {
+        task_id: z.string(),
+        include_output: z.boolean().optional(),
+      },
+    },
+    async ({ task_id, include_output = true }) => {
+      const t = slim(reap(task_id));
+      if (!include_output && t) delete t.result;
+      return ok(t);
+    }
+  );
+
+  server.registerTool(
+    "copilot_task_wait",
+    {
+      title: "Wait for a delegated Copilot task",
+      description:
+        "Block until a delegated Copilot task finishes, or until timeout. Prefer " +
+        "copilot_task_status and doing your own work in between -- only wait when you " +
+        "genuinely cannot proceed without Copilot's result.",
+      inputSchema: {
+        task_id: z.string(),
+        timeout_seconds: z.number().int().optional(),
+      },
+    },
+    async ({ task_id, timeout_seconds = 120 }) => {
+      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
+      for (;;) {
+        const t = reap(task_id);
+        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) return ok(slim(t));
+        if (Date.now() >= deadline) {
+          return ok({ ...slim(t), timed_out_waiting: true, note: "Still running. Call copilot_task_status later." });
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  );
+
+  server.registerTool(
+    "copilot_followup",
+    {
+      title: "Follow up in the same Copilot session",
+      description:
+        "Send a follow-up into the SAME Copilot session as a finished task, so it keeps " +
+        "its context (e.g. 'now make the header responsive'). Use this rather than a " +
+        "fresh copilot_delegate whenever the request builds on work it just did.",
+      inputSchema: {
+        task_id: z.string(),
+        prompt: z.string(),
+      },
+    },
+    async ({ task_id, prompt }) =>
+      ok(
+        followupTask({
+          owner: "copilot", task_id, prompt, spawn: spawnCopilot,
+          buildExtra: (conversationId) => ({ resumeSessionId: conversationId }),
+        })
+      )
+  );
+
+  server.registerTool(
+    "copilot_cancel",
+    {
+      title: "Cancel a delegated Copilot task",
+      description: "Stop a running delegated Copilot task and release any paths it held.",
+      inputSchema: { task_id: z.string() },
+    },
+    async ({ task_id }) => ok(cancelTask(task_id))
   );
 
   server.registerTool(

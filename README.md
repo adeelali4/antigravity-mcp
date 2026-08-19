@@ -2,9 +2,9 @@
 
 # antigravity-mcp-server
 
-**Let two AI agents build your app at the same time — without stepping on each other.**
+**Let multiple AI agents build your app at the same time — without stepping on each other.**
 
-Your agent does the backend. Antigravity does the UI. Neither one breaks the other's files.
+Hand work to Antigravity or GitHub Copilot, keep working yourself, and none of you break each other's files.
 
 [![npm](https://img.shields.io/npm/v/antigravity-mcp-server.svg)](https://www.npmjs.com/package/antigravity-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -24,28 +24,29 @@ They can't see each other. That's the whole issue.
 
 ## The fix
 
-One small server that both agents plug into. It gives them a shared memory:
-who is doing what, which files are taken, and what they need to tell each other.
+One small server every agent plugs into. It gives them a shared memory: who is
+doing what, which files are taken, and what they need to tell each other — plus
+the ability to hand work to Antigravity or Copilot as a background job.
 
 ```
-   Your AI agent                                    Antigravity
-   Claude Code · Cursor · Windsurf                  (agy CLI)
+   Your AI agent                            Antigravity        Copilot
+   Claude Code · Cursor · Windsurf           (agy CLI)        (copilot CLI)
    VS Code · Gemini CLI · OpenCode
-          │                                              │
-          │  MCP                                     MCP │
-          └──────────────┐                ┌──────────────┘
-                         ▼                ▼
+          │                                       │                │
+          │  MCP                              MCP │            MCP │
+          └──────────────┐         ┌──────────────┘   ┌────────────┘
+                         ▼         ▼                  ▼
               ┌─────────────────────────────────┐
-              │        antigravity-mcp-server          │
+              │     antigravity-mcp-server      │
               │                                 │
-              │   board.json                    │
-              │    ├─ tasks .... who does what  │
-              │    ├─ locks .... files taken    │
-              │    ├─ notes .... messages       │
-              │    └─ presence . who is online  │
+              │ board.json                      │
+              │  ├─ tasks ..... who does what   │
+              │  ├─ locks ..... files taken     │
+              │  ├─ notes ..... messages        │
+              │  └─ presence .. who is online   │
               └─────────────────────────────────┘
                               │
-                              └──► starts `agy` in the background
+                              └──► starts agy / copilot in the background
 ```
 
 ---
@@ -53,10 +54,11 @@ who is doing what, which files are taken, and what they need to tell each other.
 ## Install
 
 ```bash
-npx antigravity-mcp-server init
+npm install -g antigravity-mcp-server
+antigravity-mcp-server init
 ```
 
-That's it. This one command:
+`init` does the rest:
 
 - finds every AI tool on your computer
 - adds the server to each one
@@ -64,11 +66,18 @@ That's it. This one command:
 
 Now restart your AI tools so they pick it up.
 
-Prefer it installed permanently instead of fetched each run:
+A global install is worth the extra step over `npx`: your editor spawns this
+server on every session, and `npx` re-checks the registry on each launch and
+can silently pull a newer version mid-session — which matters here, since both
+agents need to speak the same board schema. A global install starts instantly
+and only changes version when you run `npm update -g` yourself. `init` detects
+a global install automatically and writes the direct command into every
+config; it only falls back to `npx` if it can't find one.
+
+No install, if you just want to try it once:
 
 ```bash
-npm install -g antigravity-mcp-server
-antigravity-mcp-server init
+npx antigravity-mcp-server init
 ```
 
 Other commands:
@@ -79,11 +88,14 @@ antigravity-mcp-server doctor --probe   # same, plus a real round trip through a
 antigravity-mcp-server init --dry-run   # show changes, write nothing
 antigravity-mcp-server init --all       # also write configs for tools you haven't installed
 antigravity-mcp-server init --only claude-code,cursor
+antigravity-mcp-server init --global    # force the direct-command form
+antigravity-mcp-server init --npx       # force npx, even with a global install present
 ```
 
-**You need:** Node 18.17 or newer, and the [Antigravity](https://antigravity.google)
-CLI (`agy`). Without `agy` you still get the shared board — you just can't hand
-work to Antigravity.
+**You need:** Node 18.17 or newer, and at least one of [Antigravity](https://antigravity.google)
+(`agy`) or the [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli)
+(`copilot`). You get the shared board either way — a missing CLI just means you
+can't hand work to that one.
 
 ---
 
@@ -91,9 +103,12 @@ work to Antigravity.
 
 You don't learn any commands. You just talk to your agent:
 
-> *"Build the checkout page with Antigravity while you do the payments API."*
+> *"Have Antigravity build the checkout page while you do the payments API."*
+> *"Get Copilot to write tests for the parser while you fix the bug."*
 
-Your agent takes it from there. Here is what actually happens:
+A delegated agent isn't limited to any one kind of work — UI, backend, tests,
+docs, a refactor, whatever the task actually is. Your agent takes it from
+there. Here is what actually happens:
 
 ```
   time ──────────────────────────────────────────────────────►
@@ -105,8 +120,8 @@ Your agent takes it from there. Here is what actually happens:
                                    └── both work at once ─┘
 ```
 
-Your agent writes a full brief, locks its own files, starts Antigravity in the
-background, and **keeps working**. Nobody waits.
+Your agent writes a full brief, locks its own files, starts the delegated
+agent in the background, and **keeps working**. Nobody waits.
 
 ---
 
@@ -115,7 +130,8 @@ background, and **keeps working**. Nobody waits.
 ### 1. File locks
 
 Before an agent edits a file, it claims it. Locking a folder locks everything
-inside it.
+inside it. Whatever the split ends up being (this example happens to be
+backend vs. UI, but it doesn't have to be):
 
 ```
   my-app/
@@ -130,12 +146,12 @@ silent overwrite.
 
 ### 2. Notes
 
-The UI is being built against an API that **does not exist yet**. So the two
-agents pass the plan back and forth:
+When two agents are building against a shared interface that **doesn't exist
+yet**, they pass the contract back and forth:
 
 > *"POST /api/orders is ready. It returns `{ id, status }`. Hook the form to it."*
 
-This is the thing that keeps both halves fitting together.
+This is the thing that keeps both sides fitting together.
 
 ### 3. Presence
 
@@ -150,19 +166,23 @@ Your agent picks these on its own. You never type them.
 
 | Group | Tools |
 |---|---|
-| **Hand off work** | `ag_delegate` · `ag_task_status` · `ag_task_wait` · `ag_followup` · `ag_cancel` |
+| **Hand off to Antigravity** | `ag_delegate` · `ag_task_status` · `ag_task_wait` · `ag_followup` · `ag_cancel` |
+| **Hand off to Copilot** | `copilot_delegate` · `copilot_task_status` · `copilot_task_wait` · `copilot_followup` · `copilot_cancel` |
 | **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` |
 | **File locks** | `claim_paths` · `release_paths` · `check_paths` |
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
 | **Admin** | `coop_reset` |
+
+The two delegation lanes are symmetric — same shape, same behavior — so your
+agent picks whichever CLI you named.
 
 Two worth knowing about:
 
 **`coop_status`** — one call answers everything: who's online, what's running,
 what's locked, what's unread.
 
-**`ag_followup`** — carries on the *same* Antigravity conversation. So *"now make
-it work on mobile"* keeps all the context instead of starting cold.
+**`ag_followup` / `copilot_followup`** — carries on the *same* conversation. So
+*"now make it work on mobile"* keeps all the context instead of starting cold.
 
 ---
 
@@ -198,13 +218,26 @@ agy --print <brief> --output-format json --print-timeout <n>s \
     --add-dir <cwd> --mode accept-edits --dangerously-skip-permissions
 ```
 
-The child is spawned **detached**, with stdout redirected straight to
+`copilot_delegate` shells out to:
+
+```bash
+copilot -p <brief> --output-format json --add-dir <cwd> --allow-all-tools
+```
+
+Both children are spawned **detached**, with output redirected straight to
 `runs/<task_id>.json`. That means a long job survives the MCP server being
 restarted — status is recovered by reading the run file and checking the PID,
-not by holding a child handle.
+not by holding a child handle. agy emits one JSON object; copilot emits JSONL
+(one event per line, terminated by a `type: "result"` line) — both get
+normalised to the same `{status, response, conversation_id, usage}` shape
+before landing on the board, so the rest of the server doesn't care which
+backend produced them.
 
-`ag_followup` reuses the `conversation_id` from agy's JSON output via
-`--conversation`, so context carries across calls.
+`ag_followup` reuses agy's `conversation_id` via `--conversation`;
+`copilot_followup` reuses Copilot's session id via `--resume`. Either way,
+context carries across calls. Note: copilot has no session-level timeout flag
+(`agy`'s `--print-timeout` has no equivalent) — a hung Copilot job just stays
+"running" until it exits on its own or `copilot_cancel` kills it.
 
 ### Path locks
 
@@ -242,21 +275,24 @@ invisible to each other, which defeats the whole point.
 
 ## Good to know
 
-**Long jobs are safe.** Antigravity runs detached. If your editor or the server
-restarts, the job keeps going.
+**Long jobs are safe.** Both backends run detached. If your editor or the
+server restarts, the job keeps going.
 
-**Antigravity edits without asking.** `ag_delegate` passes
-`--dangerously-skip-permissions` so it can work unattended. Pass
-`auto_approve: false` to make it stop at prompts instead.
+**Delegated agents edit without asking.** `ag_delegate` passes
+`--dangerously-skip-permissions`; `copilot_delegate` passes `--allow-all-tools`
+(the documented minimum Copilot needs to write files in non-interactive mode).
+Pass `auto_approve: false` on either to make it stop at prompts instead.
 
-**One trap `init` handles for you.** In headless mode `agy` auto-denies every MCP
-call unless allow-listed in `~/.gemini/antigravity-cli/settings.json`. If that
-rule is missing, delegation still runs but coordination silently does nothing —
-the worst kind of failure, because it looks like it works. `init` adds
-`mcp(coop/*)`; `doctor` checks for it.
+**One trap `init` handles for you, for agy.** In headless mode `agy` auto-denies
+every MCP call unless allow-listed in `~/.gemini/antigravity-cli/settings.json`.
+If that rule is missing, delegation still runs but coordination silently does
+nothing — the worst kind of failure, because it looks like it works. `init`
+adds `mcp(coop/*)`; `doctor` checks for it. Copilot has no equivalent trap: it
+was verified working with a plain `copilot mcp add --transport http` and no
+extra permission rule.
 
-**Antigravity works in its own scratch project** unless the target directory is
-in its workspace. Every hand-off passes `--add-dir <cwd>` and states the project
+**Both work in their own scratch project** unless the target directory is in
+their workspace. Every hand-off passes `--add-dir <cwd>` and states the project
 root in the brief.
 
 ---
@@ -266,6 +302,7 @@ root in the brief.
 | | |
 |---|---|
 | `AGY_BIN` | Path to the `agy` binary |
+| `COPILOT_BIN` | Path to the `copilot` binary |
 | `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) |
 | `--agent <id>` | The name this instance uses on the board |
 
@@ -273,7 +310,21 @@ root in the brief.
 
 ## Setting it up by hand
 
-Add this to your tool's MCP config:
+With a global install (`npm install -g antigravity-mcp-server`), add this to
+your tool's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "antigravity-mcp-server",
+      "args": ["--agent", "claude-code"]
+    }
+  }
+}
+```
+
+Without a global install, use `npx` instead:
 
 ```json
 {
@@ -304,8 +355,9 @@ git clone https://github.com/adeelali4/antigravity-mcp
 cd antigravity-mcp
 npm install
 
-npm test                    # 16 checks, two live stdio clients, no agy credits used
-node test/delegation.js     # real end-to-end run (uses agy credits)
+npm test                             # 16 checks, two live stdio clients, no CLI credits used
+node test/delegation.js              # real end-to-end run through agy (uses agy credits)
+node test/delegation-copilot.js      # real end-to-end run through copilot (uses Copilot credits)
 node src/cli.js init --local --dry-run
 ```
 

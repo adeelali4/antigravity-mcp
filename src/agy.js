@@ -2,38 +2,30 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { HOME, runsDir, ensureDirs } from "./store.js";
+import { WIN, findBinary } from "./proc.js";
 
-const WIN = process.platform === "win32";
-
-function candidates() {
-  return [
-    process.env.AGY_BIN,
-    WIN && path.join(HOME, "AppData", "Local", "agy", "bin", "agy.exe"),
-    path.join(HOME, ".local", "bin", WIN ? "agy.exe" : "agy"),
-    path.join(HOME, ".agy", "bin", WIN ? "agy.exe" : "agy"),
-    "/usr/local/bin/agy",
-    "/opt/homebrew/bin/agy",
-  ].filter(Boolean);
-}
+export { isAlive, killTree } from "./proc.js";
 
 let cached = null;
 
 export function findAgy({ required = true } = {}) {
   if (cached && fs.existsSync(cached)) return cached;
-  for (const c of candidates()) {
-    if (c && fs.existsSync(c)) return (cached = c);
-  }
-  // Fall back to PATH.
-  const probe = spawnSync(WIN ? "where" : "which", ["agy"], { encoding: "utf8" });
-  const hit = (probe.stdout || "").split(/\r?\n/).find((l) => l.trim());
-  if (hit && fs.existsSync(hit.trim())) return (cached = hit.trim());
-  if (!required) return null;
-  throw new Error(
-    "Antigravity CLI (agy) not found. Install Antigravity, or set AGY_BIN to the " +
-      "full path of the agy binary."
-  );
+  const found = findBinary({
+    envVar: "AGY_BIN",
+    binName: "agy",
+    label: "Antigravity CLI (agy)",
+    required,
+    candidates: [
+      WIN && path.join(HOME, "AppData", "Local", "agy", "bin", "agy.exe"),
+      path.join(HOME, ".local", "bin", WIN ? "agy.exe" : "agy"),
+      path.join(HOME, ".agy", "bin", WIN ? "agy.exe" : "agy"),
+      "/usr/local/bin/agy",
+      "/opt/homebrew/bin/agy",
+    ].filter(Boolean),
+  });
+  return found ? (cached = found) : null;
 }
 
 export const outPath = (id) => path.join(runsDir(), `${id}.json`);
@@ -82,26 +74,6 @@ export function spawnAgy(id, prompt, opts = {}) {
   fs.closeSync(out);
   fs.closeSync(err);
   return child.pid;
-}
-
-export function isAlive(pid) {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
-
-export function killTree(pid) {
-  if (!pid) return;
-  try {
-    if (WIN) spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
-    else process.kill(-pid, "SIGTERM");
-  } catch {
-    /* already dead */
-  }
 }
 
 /** agy may print banner lines before its JSON object, so scan for the object. */
