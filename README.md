@@ -134,6 +134,9 @@ When two agents are building against a shared interface that doesn't exist yet, 
 ### 3. Presence avoids clashes
 Each agent checks what the other is doing before it starts, so it always picks work that fits into the bigger picture.
 
+### 4. Agents look out for each other
+A finished task releases its own locks automatically — nobody has to remember to clean up after themselves. And if one ever slips through anyway, the next agent to check in sees it immediately: locks tied to work that's already over are called out by name, so it gets fixed instead of silently getting in the way.
+
 ---
 
 ## Under the hood
@@ -157,7 +160,7 @@ Your agent picks these on its own using MCP.
 The three delegation lanes are symmetric — same shape, same behavior — so your agent picks whichever CLI you named. `claude_delegate` launches a fully independent `claude` CLI process, not a subagent inside the calling session — and because it's a plain `claude` invocation, it automatically inherits whatever MCP servers are registered at user scope, this one included, so a delegated Claude can call `coop_status` / `claim_paths` on itself with no extra setup.
 
 Two worth knowing about:
-- **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread.
+- **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread. It also reaps every running task's real status first, and any lock still standing for a task that's already over is flagged `orphaned` with the reason why -- a finished task releases its own locks automatically, so a flag here means something slipped through (an old lock claimed without a task_id, say), not routine cleanup.
 - **`ag_followup` / `copilot_followup` / `claude_followup`** — carries on the *same* conversation. 
 
 ### How it works inside

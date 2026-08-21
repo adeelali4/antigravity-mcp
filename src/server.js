@@ -347,9 +347,12 @@ export function buildServer() {
       title: "Coordination status",
       description:
         "One-stop situational awareness: who is online, what each agent is running, " +
-        "which paths are locked, open tasks, and unread notes addressed to you. Call " +
-        "this before starting work or editing files so you do not collide with the " +
-        "other agent.",
+        "which paths are locked, open tasks, and unread notes addressed to you. Also " +
+        "the checkpoint where you look out for the OTHER agent: any lock still standing " +
+        "for a task that's actually finished is called out as orphaned, so you can " +
+        "flag it or nudge them rather than silently working around a lock that never " +
+        "should have outlived its task. Call this before starting work or editing " +
+        "files so you do not collide with the other agent.",
       inputSchema: {},
     },
     async () => {
@@ -357,6 +360,24 @@ export function buildServer() {
         await reap(t.id);
       }
       const b = read();
+      const taskById = new Map(b.tasks.map((t) => [t.id, t]));
+      const lockedPaths = b.locks.map((l) => {
+        const task = l.taskId ? taskById.get(l.taskId) : null;
+        // A lock tied to a task that's gone, or already terminal, outlived the
+        // work it was reserved for -- reap() releases these itself the moment
+        // it next reconciles that task, but nothing forces that to happen
+        // promptly, and a lock claimed by hand (no taskId at all) is never
+        // orphaned this way, since it was never tied to a task's lifetime.
+        const orphaned = !!l.taskId && (!task || !["running", "queued"].includes(task.status));
+        return {
+          path: l.path, owner: l.owner, note: l.note, since: ago(l.created),
+          ...(orphaned && {
+            orphaned: true,
+            orphan_reason: task ? `its task (${l.taskId}) is already ${task.status}` : `its task (${l.taskId}) no longer exists`,
+          }),
+        };
+      });
+      const orphanedCount = lockedPaths.filter((l) => l.orphaned).length;
       return ok({
         you_are: AGENT,
         presence: Object.entries(b.presence).map(([agent, p]) => ({
@@ -368,16 +389,19 @@ export function buildServer() {
             id: t.id, title: t.title, owner: t.owner, status: t.status,
             kind: t.kind, cwd: t.cwd, age: ago(t.created),
           })),
-        locked_paths: b.locks.map((l) => ({
-          path: l.path, owner: l.owner, note: l.note, since: ago(l.created),
-        })),
+        locked_paths: lockedPaths,
         unread_notes: b.notes
           .filter((n) => [AGENT, "all"].includes(n.to) && n.from !== AGENT && !n.readAt)
           .map((n) => ({ id: n.id, from: n.from, body: n.body, when: ago(n.created) })),
         recent_activity: b.events.slice(-12).reverse().map((e) => ({
           agent: e.agent, kind: e.kind, detail: e.detail, when: ago(e.ts),
         })),
-        hint: "Locked paths belong to their owner. Do not edit them; use notes_send instead.",
+        hint:
+          "Locked paths belong to their owner. Do not edit them; use notes_send instead." +
+          (orphanedCount
+            ? ` ${orphanedCount} lock(s) are marked orphaned -- their task is already over. ` +
+              "Point it out to that agent (notes_send) rather than editing past it."
+            : ""),
       });
     }
   );
