@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-server",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "MCP server that lets any AI coding agent delegate work to the Antigravity CLI (agy), the GitHub Copilot CLI, or another Claude Code instance, coordinate with them through a shared task board, and visualize them live in a bundled retro-office UI.",
   "type": "module",
   "bin": {
