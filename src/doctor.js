@@ -12,7 +12,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const PASS = "ok", FAIL = "FAIL", WARN = "warn";
 
-export function doctor({ probe = false } = {}) {
+export async function doctor({ probe = false } = {}) {
   const checks = [];
   const add = (name, state, detail) => checks.push({ name, state, detail });
 
@@ -44,7 +44,7 @@ export function doctor({ probe = false } = {}) {
   );
 
   try {
-    mutate((b) => b);
+    await mutate((b) => b);
     add("shared board", PASS, stateDir());
   } catch (e) {
     add("shared board", FAIL, `${stateDir()} — ${e.message}`);

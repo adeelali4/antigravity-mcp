@@ -43,9 +43,9 @@ export function ensureDirs() {
 
 const LOCK_STALE_MS = 20_000;
 
-function acquire() {
+async function acquire() {
   const lock = lockPath();
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + LOCK_STALE_MS + 5_000;
   for (;;) {
     try {
       fs.mkdirSync(lock);
@@ -64,7 +64,7 @@ function acquire() {
       if (Date.now() > deadline) {
         throw new Error(`timed out waiting for board lock at ${lock}`);
       }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      await new Promise((r) => setTimeout(r, 25));
     }
   }
 }
@@ -94,12 +94,12 @@ function write(board) {
 }
 
 /** Run `fn` against the board under an exclusive lock and persist the result. */
-export function mutate(fn) {
+export async function mutate(fn) {
   ensureDirs();
-  acquire();
+  await acquire();
   try {
     const board = read();
-    const out = fn(board);
+    const out = await fn(board);
     write(board);
     return out;
   } finally {

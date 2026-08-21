@@ -37,18 +37,48 @@ export function OfficeCanvas({ engine, selectedId, onSelect }: Props) {
 
     let raf = 0;
     let last = performance.now();
+    let isHidden = document.hidden;
 
     const frame = (now: number) => {
       const dt = now - last;
       last = now;
-      engine.tick(dt);
-      draw(ctx, now);
+
+      if (!isHidden) {
+        engine.tick(dt);
+        draw(ctx, now);
+      }
       raf = requestAnimationFrame(frame);
     };
+
+    const handleVisibilityChange = () => {
+      isHidden = document.hidden;
+      if (!isHidden) {
+        // Reset last time to prevent huge dt jump
+        last = performance.now();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine]);
+
+  const cacheRef = useRef<{
+    assignments: Record<string, string> | null;
+    deskLocations: ReturnType<typeof listDeskLocations>;
+    agents: Record<string, Agent> | null;
+    ownerByDesk: Map<string, Agent>;
+  }>({
+    assignments: null,
+    deskLocations: [],
+    agents: null,
+    ownerByDesk: new Map(),
+  });
 
   function draw(ctx: CanvasRenderingContext2D, timeMs: number) {
     const { agents, deskAssignments } = useAgentStore.getState();
@@ -56,15 +86,24 @@ export function OfficeCanvas({ engine, selectedId, onSelect }: Props) {
     ctx.clearRect(0, 0, WORLD_W, WORLD_H);
     drawRoom(ctx);
 
-    const overflowIds = Array.from(new Set(Object.values(deskAssignments))).filter((id) => id.startsWith("overflow-"));
-    const deskLocations = [...listDeskLocations(), ...overflowIds.map(getLocation)];
-
-    // Owner lookup so a desk keeps its name/dim state even while its agent is offline.
-    const ownerByDesk = new Map<string, Agent>();
-    for (const agent of Object.values(agents)) {
-      const desk = deskAssignments[agent.id];
-      if (desk) ownerByDesk.set(desk, agent);
+    const cache = cacheRef.current;
+    if (cache.assignments !== deskAssignments) {
+      const overflowIds = Array.from(new Set(Object.values(deskAssignments))).filter((id) => id.startsWith("overflow-"));
+      cache.deskLocations = [...listDeskLocations(), ...overflowIds.map(getLocation)];
+      cache.assignments = deskAssignments;
     }
+    const deskLocations = cache.deskLocations;
+
+    if (cache.agents !== agents || cache.assignments !== deskAssignments) {
+      const ownerByDesk = new Map<string, Agent>();
+      for (const agent of Object.values(agents)) {
+        const desk = deskAssignments[agent.id];
+        if (desk) ownerByDesk.set(desk, agent);
+      }
+      cache.ownerByDesk = ownerByDesk;
+      cache.agents = agents;
+    }
+    const ownerByDesk = cache.ownerByDesk;
 
     for (const loc of deskLocations) {
       const owner = ownerByDesk.get(loc.id) ?? null;

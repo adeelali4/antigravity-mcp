@@ -32,6 +32,7 @@ const LEAVE_MS = 420;
  */
 export class MovementEngine {
   private anim = new Map<string, AnimAgent>();
+  private animList: AnimAgent[] = [];
   private enterTimers = new Map<string, number>();
   private leaveTimers = new Map<string, number>();
 
@@ -57,7 +58,7 @@ export class MovementEngine {
 
       if (!existing) {
         // First appearance: pop in already seated, no long walk from nowhere.
-        this.anim.set(agent.id, {
+        const newAgent: AnimAgent = {
           id: agent.id,
           x: seat.x,
           y: seat.y,
@@ -68,7 +69,9 @@ export class MovementEngine {
           path: [],
           routedLocation: agent.location,
           routedSeat: seat,
-        });
+        };
+        this.anim.set(agent.id, newAgent);
+        this.animList.push(newAgent);
         this.enterTimers.set(agent.id, 0);
         continue;
       }
@@ -151,13 +154,20 @@ export class MovementEngine {
       }
     }
 
+    let needsCleanup = false;
     for (const [id, a] of this.anim) {
-      if (a.phase === "gone") this.anim.delete(id);
+      if (a.phase === "gone") {
+        this.anim.delete(id);
+        needsCleanup = true;
+      }
+    }
+    if (needsCleanup) {
+      this.animList = this.animList.filter(a => a.phase !== "gone");
     }
   }
 
-  getSnapshot(): AnimAgent[] {
-    return Array.from(this.anim.values());
+  getSnapshot(): readonly AnimAgent[] {
+    return this.animList;
   }
 
   get(id: string): AnimAgent | undefined {

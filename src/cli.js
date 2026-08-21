@@ -82,7 +82,7 @@ async function main() {
       return;
     }
     case "doctor": {
-      process.exitCode = printDoctor(doctor({ probe: has("--probe") })) ? 1 : 0;
+      process.exitCode = printDoctor(await doctor({ probe: has("--probe") })) ? 1 : 0;
       return;
     }
     case "ui": {

@@ -30,11 +30,20 @@ const MIME = {
 };
 
 function serveStatic(req, res) {
-  const urlPath = decodeURIComponent(req.url.split("?")[0]);
+  // Malformed percent-encoding (e.g. GET /%) makes decodeURIComponent throw,
+  // and a throw out of an http request listener is an uncaughtException that
+  // kills the process -- treat it as just another unresolvable path instead.
+  let urlPath;
+  try {
+    urlPath = decodeURIComponent(req.url.split("?")[0]);
+  } catch {
+    urlPath = "/";
+  }
   let filePath = path.join(UI_DIST, urlPath === "/" ? "index.html" : urlPath);
+  const inUiDist = filePath === UI_DIST || filePath.startsWith(UI_DIST + path.sep);
 
   // Path-traversal guard, then SPA fallback for anything that isn't a real file.
-  if (!filePath.startsWith(UI_DIST)) filePath = path.join(UI_DIST, "index.html");
+  if (!inUiDist) filePath = path.join(UI_DIST, "index.html");
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     filePath = path.join(UI_DIST, "index.html");
   }
@@ -79,6 +88,7 @@ export function startUiServer({ port = DEFAULT_UI_PORT } = {}) {
   }
 
   function poll() {
+    if (wss.clients.size === 0) return;
     const board = read();
     const { events, nextMap } = diffAgents(known, computeAgents(board));
     known = nextMap;

@@ -70,6 +70,12 @@ export function spawnAgy(id, prompt, opts = {}) {
     windowsHide: true,
     stdio: ["ignore", out, err],
   });
+  // Detached + unref'd, so nothing else observes this child -- without a
+  // listener, a post-spawn failure (e.g. the binary vanishes between
+  // findAgy() and spawn()) emits an unhandled 'error' that kills this
+  // process. reap()'s isAlive(pid) check already handles a dead/undefined
+  // pid, so this can just swallow the event.
+  child.on("error", () => {});
   child.unref();
   fs.closeSync(out);
   fs.closeSync(err);

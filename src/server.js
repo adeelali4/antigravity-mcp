@@ -58,7 +58,7 @@ const ok = (obj) => ({
  * Called before any read of task state, which is what makes status survive a
  * server restart.
  */
-function reap(id) {
+async function reap(id) {
   const board = read();
   const t = board.tasks.find((x) => x.id === id);
   if (!t) return { error: `no such task: ${id}` };
@@ -67,7 +67,7 @@ function reap(id) {
   const backend = BACKENDS[t.owner];
   const payload = backend?.readResult(id);
   if (payload) {
-    return mutate((b) => {
+    return await mutate((b) => {
       const task = b.tasks.find((x) => x.id === id);
       task.status = payload.status === "SUCCESS" ? "done" : "failed";
       task.result = payload.response || "";
@@ -81,7 +81,7 @@ function reap(id) {
   }
 
   if (!isAlive(t.pid)) {
-    return mutate((b) => {
+    return await mutate((b) => {
       const task = b.tasks.find((x) => x.id === id);
       task.status = "failed";
       task.error = backend?.readStderr(id) || `${t.owner} exited without producing output`;
@@ -103,7 +103,7 @@ function slim(t) {
  * Shared core of every `*_delegate` tool: validate cwd + bin, check for path
  * conflicts, spawn, and record the task + locks + presence on the board.
  */
-function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, claim, findBin, spawn, title, prompt }) {
+async function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, claim, findBin, spawn, title, prompt }) {
   if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
     return { error: `cwd is not a directory: ${cwd}` };
   }
@@ -125,7 +125,7 @@ function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, claim,
     return { error: `failed to launch ${owner}: ${e.message}` };
   }
 
-  mutate((b) => {
+  await mutate((b) => {
     const now = Date.now();
     b.tasks.push({
       id, title, detail: prompt, owner, assignedBy: AGENT,
@@ -157,8 +157,8 @@ function briefingFor(owner, cwd, claim, prompt) {
   );
 }
 
-function followupTask({ owner, task_id, prompt, spawn, buildExtra }) {
-  const parent = reap(task_id);
+async function followupTask({ owner, task_id, prompt, spawn, buildExtra }) {
+  const parent = await reap(task_id);
   if (parent.error) return parent;
   if (["running", "queued"].includes(parent.status)) {
     return { error: `task ${task_id} is still running; wait for it before following up` };
@@ -173,7 +173,7 @@ function followupTask({ owner, task_id, prompt, spawn, buildExtra }) {
   } catch (e) {
     return { error: `failed to launch ${owner}: ${e.message}` };
   }
-  mutate((b) => {
+  await mutate((b) => {
     const now = Date.now();
     b.tasks.push({
       id, title: `follow-up: ${parent.title}`, detail: prompt, owner,
@@ -185,11 +185,11 @@ function followupTask({ owner, task_id, prompt, spawn, buildExtra }) {
   return { task_id: id, status: "running", conversation_id: parent.conversationId, pid };
 }
 
-function cancelTask(task_id) {
+async function cancelTask(task_id) {
   const t = read().tasks.find((x) => x.id === task_id);
   if (!t) return { error: `no such task: ${task_id}` };
   killTree(t.pid);
-  mutate((b) => {
+  await mutate((b) => {
     const task = b.tasks.find((x) => x.id === task_id);
     task.status = "cancelled";
     task.updated = Date.now();
@@ -199,6 +199,72 @@ function cancelTask(task_id) {
   return { task_id, status: "cancelled", released_locks: true };
 }
 
+/**
+ * task_status, task_wait and cancel are byte-for-byte identical logic across
+ * all three backends -- only the tool name prefix and the label used in
+ * generated titles/descriptions differ. Factored out so the three copies
+ * can't drift out of sync the way they had started to (agy/claude/copilot's
+ * conversation_id wording had already diverged before this refactor).
+ */
+function registerBackendStatusTools(server, { toolPrefix, label, conversationIdNote = "" }) {
+  const idNote = conversationIdNote ? ` ${conversationIdNote}` : "";
+
+  server.registerTool(
+    `${toolPrefix}_task_status`,
+    {
+      title: `Check a delegated ${label} task`,
+      description:
+        `Check a delegated ${label} task: running / done / failed, plus its final ` +
+        `response and conversation_id${idNote} once finished.`,
+      inputSchema: {
+        task_id: z.string(),
+        include_output: z.boolean().optional(),
+      },
+    },
+    async ({ task_id, include_output = true }) => {
+      const t = slim(await reap(task_id));
+      if (!include_output && t) delete t.result;
+      return ok(t);
+    }
+  );
+
+  server.registerTool(
+    `${toolPrefix}_task_wait`,
+    {
+      title: `Wait for a delegated ${label} task`,
+      description:
+        `Block until a delegated ${label} task finishes, or until timeout. Prefer ` +
+        `${toolPrefix}_task_status and doing your own work in between -- only wait when you ` +
+        `genuinely cannot proceed without ${label}'s result.`,
+      inputSchema: {
+        task_id: z.string(),
+        timeout_seconds: z.number().int().optional(),
+      },
+    },
+    async ({ task_id, timeout_seconds = 120 }) => {
+      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
+      for (;;) {
+        const t = await reap(task_id);
+        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) return ok(slim(t));
+        if (Date.now() >= deadline) {
+          return ok({ ...slim(t), timed_out_waiting: true, note: `Still running. Call ${toolPrefix}_task_status later.` });
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  );
+
+  server.registerTool(
+    `${toolPrefix}_cancel`,
+    {
+      title: `Cancel a delegated ${label} task`,
+      description: `Stop a running delegated ${label} task and release any paths it held.`,
+      inputSchema: { task_id: z.string() },
+    },
+    async ({ task_id }) => ok(await cancelTask(task_id))
+  );
+}
+
 export function buildServer() {
   ensureDirs();
 
@@ -206,11 +272,15 @@ export function buildServer() {
   // bridge watching the board) has no way to tell "connected but idle" apart
   // from "process exited without a clean disconnect" -- recency of this
   // timestamp is the signal. Touches presence on startup and every 15s.
-  const touchPresence = () => {
-    mutate((b) => {
-      const existing = b.presence[AGENT];
-      b.presence[AGENT] = { status: existing?.status ?? "idle", detail: existing?.detail ?? "", ts: Date.now() };
-    });
+  const touchPresence = async () => {
+    try {
+      await mutate((b) => {
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = { status: existing?.status ?? "idle", detail: existing?.detail ?? "", ts: Date.now() };
+      });
+    } catch (e) {
+      // Background heartbeat shouldn't crash the server if it fails (e.g. if the lock times out).
+    }
   };
   touchPresence();
   const heartbeat = setInterval(touchPresence, 15000);
@@ -245,7 +315,7 @@ export function buildServer() {
     },
     async () => {
       for (const t of read().tasks.filter((x) => x.kind === "delegated" && ["running", "queued"].includes(x.status))) {
-        reap(t.id);
+        await reap(t.id);
       }
       const b = read();
       return ok({
@@ -305,7 +375,7 @@ export function buildServer() {
       const claim = (a.claim || []).map(norm);
       const id = taskId();
       return ok(
-        delegateTask({
+        await delegateTask({
           owner: "antigravity", toolPrefix: "ag", id, cwd, claim, title: a.title, prompt: a.prompt,
           briefing: briefingFor("antigravity", cwd, claim, a.prompt),
           findBin: findAgy, spawn: spawnAgy,
@@ -319,50 +389,7 @@ export function buildServer() {
     }
   );
 
-  server.registerTool(
-    "ag_task_status",
-    {
-      title: "Check a delegated task",
-      description:
-        "Check a delegated Antigravity task: running / done / failed, plus its final " +
-        "response and conversation_id once finished.",
-      inputSchema: {
-        task_id: z.string(),
-        include_output: z.boolean().optional(),
-      },
-    },
-    async ({ task_id, include_output = true }) => {
-      const t = slim(reap(task_id));
-      if (!include_output && t) delete t.result;
-      return ok(t);
-    }
-  );
-
-  server.registerTool(
-    "ag_task_wait",
-    {
-      title: "Wait for a delegated task",
-      description:
-        "Block until a delegated Antigravity task finishes, or until timeout. Prefer " +
-        "ag_task_status and doing your own work in between -- only wait when you " +
-        "genuinely cannot proceed without Antigravity's result.",
-      inputSchema: {
-        task_id: z.string(),
-        timeout_seconds: z.number().int().optional(),
-      },
-    },
-    async ({ task_id, timeout_seconds = 120 }) => {
-      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
-      for (;;) {
-        const t = reap(task_id);
-        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) return ok(slim(t));
-        if (Date.now() >= deadline) {
-          return ok({ ...slim(t), timed_out_waiting: true, note: "Still running. Call ag_task_status later." });
-        }
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-  );
+  registerBackendStatusTools(server, { toolPrefix: "ag", label: "Antigravity" });
 
   server.registerTool(
     "ag_followup",
@@ -380,21 +407,11 @@ export function buildServer() {
     },
     async ({ task_id, prompt, timeout_seconds = 1800 }) =>
       ok(
-        followupTask({
+        await followupTask({
           owner: "antigravity", task_id, prompt, spawn: spawnAgy,
           buildExtra: (conversationId) => ({ conversationId, timeoutSeconds: timeout_seconds }),
         })
       )
-  );
-
-  server.registerTool(
-    "ag_cancel",
-    {
-      title: "Cancel a delegated task",
-      description: "Stop a running delegated Antigravity task and release any paths it held.",
-      inputSchema: { task_id: z.string() },
-    },
-    async ({ task_id }) => ok(cancelTask(task_id))
   );
 
   server.registerTool(
@@ -429,7 +446,7 @@ export function buildServer() {
       const claim = (a.claim || []).map(norm);
       const id = taskId();
       return ok(
-        delegateTask({
+        await delegateTask({
           owner: "copilot", toolPrefix: "copilot", id, cwd, claim, title: a.title, prompt: a.prompt,
           briefing: briefingFor("copilot", cwd, claim, a.prompt),
           findBin: findCopilot, spawn: spawnCopilot,
@@ -442,50 +459,9 @@ export function buildServer() {
     }
   );
 
-  server.registerTool(
-    "copilot_task_status",
-    {
-      title: "Check a delegated Copilot task",
-      description:
-        "Check a delegated Copilot task: running / done / failed, plus its final " +
-        "response and conversation_id (Copilot session id) once finished.",
-      inputSchema: {
-        task_id: z.string(),
-        include_output: z.boolean().optional(),
-      },
-    },
-    async ({ task_id, include_output = true }) => {
-      const t = slim(reap(task_id));
-      if (!include_output && t) delete t.result;
-      return ok(t);
-    }
-  );
-
-  server.registerTool(
-    "copilot_task_wait",
-    {
-      title: "Wait for a delegated Copilot task",
-      description:
-        "Block until a delegated Copilot task finishes, or until timeout. Prefer " +
-        "copilot_task_status and doing your own work in between -- only wait when you " +
-        "genuinely cannot proceed without Copilot's result.",
-      inputSchema: {
-        task_id: z.string(),
-        timeout_seconds: z.number().int().optional(),
-      },
-    },
-    async ({ task_id, timeout_seconds = 120 }) => {
-      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
-      for (;;) {
-        const t = reap(task_id);
-        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) return ok(slim(t));
-        if (Date.now() >= deadline) {
-          return ok({ ...slim(t), timed_out_waiting: true, note: "Still running. Call copilot_task_status later." });
-        }
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-  );
+  registerBackendStatusTools(server, {
+    toolPrefix: "copilot", label: "Copilot", conversationIdNote: "(Copilot session id)",
+  });
 
   server.registerTool(
     "copilot_followup",
@@ -502,21 +478,11 @@ export function buildServer() {
     },
     async ({ task_id, prompt }) =>
       ok(
-        followupTask({
+        await followupTask({
           owner: "copilot", task_id, prompt, spawn: spawnCopilot,
           buildExtra: (conversationId) => ({ resumeSessionId: conversationId }),
         })
       )
-  );
-
-  server.registerTool(
-    "copilot_cancel",
-    {
-      title: "Cancel a delegated Copilot task",
-      description: "Stop a running delegated Copilot task and release any paths it held.",
-      inputSchema: { task_id: z.string() },
-    },
-    async ({ task_id }) => ok(cancelTask(task_id))
   );
 
   server.registerTool(
@@ -549,7 +515,7 @@ export function buildServer() {
       const claim = (a.claim || []).map(norm);
       const id = taskId();
       return ok(
-        delegateTask({
+        await delegateTask({
           owner: "claude-agent", toolPrefix: "claude", id, cwd, claim, title: a.title, prompt: a.prompt,
           briefing: briefingFor("claude-agent", cwd, claim, a.prompt),
           findBin: findClaude, spawn: spawnClaude,
@@ -559,50 +525,9 @@ export function buildServer() {
     }
   );
 
-  server.registerTool(
-    "claude_task_status",
-    {
-      title: "Check a delegated Claude task",
-      description:
-        "Check a delegated Claude task: running / done / failed, plus its final response " +
-        "and conversation_id (session id) once finished.",
-      inputSchema: {
-        task_id: z.string(),
-        include_output: z.boolean().optional(),
-      },
-    },
-    async ({ task_id, include_output = true }) => {
-      const t = slim(reap(task_id));
-      if (!include_output && t) delete t.result;
-      return ok(t);
-    }
-  );
-
-  server.registerTool(
-    "claude_task_wait",
-    {
-      title: "Wait for a delegated Claude task",
-      description:
-        "Block until a delegated Claude task finishes, or until timeout. Prefer " +
-        "claude_task_status and doing your own work in between -- only wait when you " +
-        "genuinely cannot proceed without its result.",
-      inputSchema: {
-        task_id: z.string(),
-        timeout_seconds: z.number().int().optional(),
-      },
-    },
-    async ({ task_id, timeout_seconds = 120 }) => {
-      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
-      for (;;) {
-        const t = reap(task_id);
-        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) return ok(slim(t));
-        if (Date.now() >= deadline) {
-          return ok({ ...slim(t), timed_out_waiting: true, note: "Still running. Call claude_task_status later." });
-        }
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-  );
+  registerBackendStatusTools(server, {
+    toolPrefix: "claude", label: "Claude", conversationIdNote: "(session id)",
+  });
 
   server.registerTool(
     "claude_followup",
@@ -619,21 +544,11 @@ export function buildServer() {
     },
     async ({ task_id, prompt }) =>
       ok(
-        followupTask({
+        await followupTask({
           owner: "claude-agent", task_id, prompt, spawn: spawnClaude,
           buildExtra: (conversationId) => ({ resumeSessionId: conversationId }),
         })
       )
-  );
-
-  server.registerTool(
-    "claude_cancel",
-    {
-      title: "Cancel a delegated Claude task",
-      description: "Stop a running delegated Claude task and release any paths it held.",
-      inputSchema: { task_id: z.string() },
-    },
-    async ({ task_id }) => ok(cancelTask(task_id))
   );
 
   server.registerTool(
@@ -653,7 +568,7 @@ export function buildServer() {
     },
     async (a) => {
       const id = taskId();
-      mutate((b) => {
+      await mutate((b) => {
         const now = Date.now();
         b.tasks.push({
           id, title: a.title, detail: a.detail || "", owner: a.owner, assignedBy: AGENT,
@@ -680,7 +595,7 @@ export function buildServer() {
       },
     },
     async (a) => {
-      const out = mutate((b) => {
+      const out = await mutate((b) => {
         const t = b.tasks.find((x) => x.id === a.task_id);
         if (!t) return { error: `no such task: ${a.task_id}` };
         if (a.status) t.status = a.status;
@@ -733,7 +648,7 @@ export function buildServer() {
       },
     },
     async ({ paths, note = "", task_id }) => {
-      const out = mutate((b) => {
+      const out = await mutate((b) => {
         const granted = [], conflicts = [];
         for (const raw of paths) {
           const p = norm(raw);
@@ -766,7 +681,7 @@ export function buildServer() {
       },
     },
     async ({ paths = [], all_mine = false }) => {
-      const released = mutate((b) => {
+      const released = await mutate((b) => {
         const before = b.locks.length;
         const targets = paths.map(norm);
         b.locks = b.locks.filter((l) =>
@@ -821,7 +736,7 @@ export function buildServer() {
       },
     },
     async ({ body, to = "all" }) => {
-      const id = mutate((b) => {
+      const id = await mutate((b) => {
         const nid = nextId(b);
         b.notes.push({ id: nid, from: AGENT, to, body, created: Date.now(), readAt: null });
         logEvent(b, AGENT, "note.sent", `-> ${to}: ${body.slice(0, 80)}`);
@@ -843,7 +758,7 @@ export function buildServer() {
       },
     },
     async ({ unread_only = true, mark_read = true, limit = 30 }) => {
-      const notes = mutate((b) => {
+      const notes = await mutate((b) => {
         let got = b.notes.filter((n) => [AGENT, "all"].includes(n.to) && n.from !== AGENT);
         if (unread_only) got = got.filter((n) => !n.readAt);
         got = got.slice(-Math.max(1, limit));
@@ -867,7 +782,7 @@ export function buildServer() {
       },
     },
     async ({ status, detail = "" }) => {
-      mutate((b) => {
+      await mutate((b) => {
         b.presence[AGENT] = { status, detail, ts: Date.now() };
         logEvent(b, AGENT, "presence", `${status}: ${detail.slice(0, 80)}`);
       });
@@ -903,7 +818,7 @@ export function buildServer() {
     },
     async ({ confirm = false }) => {
       if (!confirm) return ok({ error: "pass confirm=true to wipe the board" });
-      mutate((b) => {
+      await mutate((b) => {
         b.tasks = []; b.locks = []; b.notes = []; b.events = []; b.presence = {}; b.seq = 0;
         logEvent(b, AGENT, "board.reset", "cleared");
       });

@@ -69,9 +69,55 @@ const posted = await call(alice, "board_post", { title: "Build order form", owne
 await call(bob, "board_update", { task_id: posted.task_id, status: "running", note: "started" });
 const listed = await call(alice, "board_list", { owner: "antigravity" });
 check("board item visible to owner", listed.items.some((i) => i.id === posted.task_id && i.status === "running"));
+check(
+  "board_update nonexistent task is handled",
+  (await call(alice, "board_update", { task_id: "missing-task", status: "done" })).error !== undefined
+);
+
+await call(bob, "board_update", { task_id: posted.task_id, status: "done", note: "completed" });
+const listedDefault = await call(alice, "board_list", { owner: "antigravity" });
+const listedWithDone = await call(alice, "board_list", { owner: "antigravity", include_done: true });
+check("board_list excludes done by default", !listedDefault.items.some((i) => i.id === posted.task_id));
+check("board_list include_done includes done", listedWithDone.items.some((i) => i.id === posted.task_id));
+
+const unlockedPath = await call(alice, "check_paths", { paths: ["~/proj/free.ts"] });
+check("check_paths shows unlocked path as free", unlockedPath.paths[0]?.free === true);
+
+await call(alice, "claim_paths", { paths: ["~/proj/self-lock.ts"], note: "self-lock test" });
+const selfHeld = await call(alice, "check_paths", { paths: ["~/proj/self-lock.ts"] });
+check("check_paths reports own lock as free", selfHeld.paths[0]?.free === true);
+
+await call(alice, "notes_send", { to: "all", body: "broadcast: sync point" });
+await call(alice, "notes_send", { to: "antigravity", body: "targeted: antigravity-only" });
+const aliceInbox = await call(alice, "notes_read", { mark_read: false });
+check("notes_send to all does not auto-send to sender inbox", !aliceInbox.notes.some((n) => /broadcast: sync point/.test(n.body)));
+const bobInbox = await call(bob, "notes_read", { mark_read: false });
+check(
+  "notes_send targeted + all reaches target",
+  bobInbox.count >= 2 &&
+    bobInbox.notes.some((n) => /broadcast: sync point/.test(n.body)) &&
+    bobInbox.notes.some((n) => /targeted: antigravity-only/.test(n.body))
+);
+const bobUnreadAgain = await call(bob, "notes_read", { unread_only: true });
+check(
+  "notes_read mark_read false keeps notes unread",
+  bobUnreadAgain.count >= 2 &&
+    bobUnreadAgain.notes.some((n) => /broadcast: sync point/.test(n.body)) &&
+    bobUnreadAgain.notes.some((n) => /targeted: antigravity-only/.test(n.body))
+);
+await call(bob, "notes_read", {});
+
+await call(alice, "claim_paths", { paths: ["~/proj/release-a.ts", "~/proj/release-b.ts"], note: "selective release test" });
+const selectiveRelease = await call(alice, "release_paths", { paths: ["~/proj/release-a.ts"] });
+check("release_paths explicit path releases one", selectiveRelease.released === 1);
+const afterSelective = await call(bob, "check_paths", { paths: ["~/proj/release-a.ts", "~/proj/release-b.ts"] });
+check(
+  "release_paths explicit path leaves other held",
+  afterSelective.paths[0]?.free === true && afterSelective.paths[1]?.free === false
+);
 
 const released = await call(alice, "release_paths", { all_mine: true });
-check("release drops only my locks", released.released === 2);
+check("release drops only my locks", released.released === 4);
 check("other agent keeps its lock", (await call(bob, "check_paths", { paths: ["~/proj/ui"] })).paths[0].free);
 
 check("unknown task handled", (await call(alice, "ag_task_status", { task_id: "nope" })).error !== undefined);
