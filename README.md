@@ -17,16 +17,13 @@ Hand work to Antigravity or GitHub Copilot, keep working yourself, and none of y
 
 ## The problem
 
-Running two AI coding agents on one project sounds great — until they both edit
-the same file and quietly destroy each other's work.
+Running two AI coding agents on one project sounds like a superpower—right up until they both blindly edit the same file, quietly overwrite each other's work, and gaslight you about who broke the build. 
 
 They can't see each other. That's the whole issue.
 
 ## The fix
 
-One small server every agent plugs into. It gives them a shared memory: who is
-doing what, which files are taken, and what they need to tell each other — plus
-the ability to hand work to Antigravity or Copilot as a background job.
+One small server every agent plugs into. It acts as their shared brain, tracking who is doing what and which files are claimed. It gives your primary agent the ability to spin up Antigravity, Copilot, or another Claude instance to do its chores in the background, all while you keep coding together in your main window.
 
 ```
    Your AI agent                            Antigravity        Copilot
@@ -51,109 +48,76 @@ the ability to hand work to Antigravity or Copilot as a background job.
 
 ---
 
-## Install
+## Install in seconds
+
+It takes just two commands to get going:
 
 ```bash
 npm install -g antigravity-mcp-server
 antigravity-mcp-server init
 ```
 
-`init` does the rest:
-
-- finds every AI tool on your computer
-- adds the server to each one
-- turns on the permission Antigravity needs
-
-Now restart your AI tools so they pick it up.
-
-A global install is worth the extra step over `npx`: your editor spawns this
-server on every session, and `npx` re-checks the registry on each launch and
-can silently pull a newer version mid-session — which matters here, since both
-agents need to speak the same board schema. A global install starts instantly
-and only changes version when you run `npm update -g` yourself. `init` detects
-a global install automatically and writes the direct command into every
-config; it only falls back to `npx` if it can't find one.
-
-No install, if you just want to try it once:
-
-```bash
-npx antigravity-mcp-server init
-```
-
-Other commands:
-
-```bash
-antigravity-mcp-server doctor           # is everything working?
-antigravity-mcp-server doctor --probe   # same, plus a real round trip through agy
-antigravity-mcp-server init --dry-run   # show changes, write nothing
-antigravity-mcp-server init --all       # also write configs for tools you haven't installed
-antigravity-mcp-server init --only claude-code,cursor
-antigravity-mcp-server init --global    # force the direct-command form
-antigravity-mcp-server init --npx       # force npx, even with a global install present
-```
-
-**You need:** Node 18.17 or newer, and at least one delegation target —
-[Antigravity](https://antigravity.google) (`agy`), the
-[GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli)
-(`copilot`), or Claude Code itself (`claude`, for delegating to another Claude
-instance). You get the shared board either way — a missing CLI just means you
-can't hand work to that one.
+`init` does the heavy lifting for you: it finds every AI tool on your computer and automatically wires them up to the shared board. Just restart your AI tools, and you're ready to go!
 
 ---
 
-## Watch it — the office UI
+## 💡 How you use it: Just talk to your agent
+
+**You will never need to read the technical tables or learn any new commands.** 
+
+You simply talk to your agent normally: *"Hey, have Antigravity build X while you do Y."* 
+
+Your agent figures out which tools to call, writes a meticulous brief, politely locks its own files so nobody steps on its toes, fires up the delegated agent in the background, and **keeps working with you**. Nobody is stuck twiddling their thumbs.
+
+---
+
+## Here's what a normal day looks like
+
+This tool lets you stay in the flow by parallelizing your work. Here is how it makes your life easier:
+
+**Work on the backend while another agent builds the UI.**
+Instead of waiting for one agent to finish before starting the next task, split the work.
+> *"Have Antigravity build out the responsive CSS for the header. You stay here and wire up the auth middleware."*
+
+**Never context-switch to write tests again.**
+You can keep your momentum on feature work and let Copilot handle the tedious parts in the background.
+> *"I need comprehensive unit tests for `store.js`. Delegate that to Copilot, and let me know when it's done."*
+
+**Follow up without repeating yourself.**
+Because the delegated agents keep conversation context, you don't have to write a fresh prompt if something needs tweaking.
+> *"Tell Antigravity to make those buttons we just added actually click properly."*
+
+**Always know what's happening.**
+If you're curious about a background task, just ask your agent instead of digging through logs.
+> *"What's agy up to right now? Check its status."*
+
+**Tackle massive tasks with a team of agents.**
+You can delegate anything—not just UI work. Let another agent handle docs, refactors, or backend chores.
+> *"Spin up another Claude instance to document all the public methods in the `/api` folder."*
+> *"This controller is a mess. Have Antigravity refactor it to use the new service pattern while you and I look at the database migrations."*
+
+**Avoid editing the same files.**
+The shared board automatically prevents collisions. If you change a core file, you can easily tell the other agent what changed so it adapts.
+> *"We're changing the user schema. Leave a note for the other agent telling it that `id` is now a string."*
+
+---
+
+## Watch it happen — the office UI
+
+Want to see your agents actually working? Open the live dashboard:
 
 ```bash
 antigravity-mcp-server ui
 ```
 
-Opens a retro pixel-art office at `http://localhost:49321` (an uncommon port,
-picked to avoid colliding with whatever else you have running) — one desk per
-agent identity, live status, current task, and who's delegating to whom, all
-driven by the same board the tools above write to. `--port <n>` to use a
-different one, `--open` to launch your browser automatically.
-
-It's one process, one port: the server serves the built UI *and* the
-WebSocket feed together, so `npm install -g antigravity-mcp-server` is the
-whole install — nothing extra to run. No agents connected yet? It falls back
-to a self-contained demo after a couple of seconds, so the page is never just
-blank.
-
----
-
-## How you use it
-
-You don't learn any commands. You just talk to your agent:
-
-> *"Have Antigravity build the checkout page while you do the payments API."*
-> *"Get Copilot to write tests for the parser while you fix the bug."*
-
-A delegated agent isn't limited to any one kind of work — UI, backend, tests,
-docs, a refactor, whatever the task actually is. Your agent takes it from
-there. Here is what actually happens:
-
-```
-  time ──────────────────────────────────────────────────────►
-
-  your agent   ███ writes brief ███│████ payments API ████│ checks result
-                                   │                      │
-  Antigravity                      │███ checkout page ███ │
-                                   │                      │
-                                   └── both work at once ─┘
-```
-
-Your agent writes a full brief, locks its own files, starts the delegated
-agent in the background, and **keeps working**. Nobody waits.
+This opens a retro pixel-art office at `http://localhost:49321`. You get a little digital floorplan with one desk per agent identity. You can literally watch them work: their live status, their current task, and who's bossing who around, all driven by the live board.
 
 ---
 
 ## Why the shared board matters
 
-### 1. File locks
-
-Before an agent edits a file, it claims it. Locking a folder locks everything
-inside it. Whatever the split ends up being (this example happens to be
-backend vs. UI, but it doesn't have to be):
+### 1. File locks prevent broken builds
+Before an agent edits a folder, it claims it. If an agent tries to take a claimed file, it gets a clear conflict back. No silent overwrites, no broken builds.
 
 ```
   my-app/
@@ -163,28 +127,22 @@ backend vs. UI, but it doesn't have to be):
   └── styles/        [locked] Antigravity
 ```
 
-If an agent tries to take a locked file, it gets a clear **conflict** back. No
-silent overwrite.
-
-### 2. Notes
-
-When two agents are building against a shared interface that **doesn't exist
-yet**, they pass the contract back and forth:
-
+### 2. Notes keep everyone aligned
+When two agents are building against a shared interface that doesn't exist yet, they can pass messages to each other:
 > *"POST /api/orders is ready. It returns `{ id, status }`. Hook the form to it."*
 
-This is the thing that keeps both sides fitting together.
-
-### 3. Presence
-
-Each agent can check what the other is doing before it starts, so it picks work
-that doesn't clash.
+### 3. Presence avoids clashes
+Each agent checks what the other is doing before it starts, so it always picks work that fits into the bigger picture.
 
 ---
 
-## The tools
+## Under the hood
 
-Your agent picks these on its own. You never type them.
+*The sections below are for developers and the incurably curious. You do not need to read any of this to use the tool!*
+
+### The tools reference
+
+Your agent picks these on its own using MCP. 
 
 | Group | Tools |
 |---|---|
@@ -196,27 +154,15 @@ Your agent picks these on its own. You never type them.
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
 | **Admin** | `coop_reset` |
 
-The three delegation lanes are symmetric — same shape, same behavior — so your
-agent picks whichever CLI you named. `claude_delegate` launches a fully
-independent `claude` CLI process, not a subagent inside the calling session —
-and because it's a plain `claude` invocation, it automatically inherits
-whatever MCP servers are registered at user scope, this one included, so a
-delegated Claude can call `coop_status` / `claim_paths` on itself with no
-extra setup.
+The three delegation lanes are symmetric — same shape, same behavior — so your agent picks whichever CLI you named. `claude_delegate` launches a fully independent `claude` CLI process, not a subagent inside the calling session — and because it's a plain `claude` invocation, it automatically inherits whatever MCP servers are registered at user scope, this one included, so a delegated Claude can call `coop_status` / `claim_paths` on itself with no extra setup.
 
 Two worth knowing about:
+- **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread.
+- **`ag_followup` / `copilot_followup` / `claude_followup`** — carries on the *same* conversation. 
 
-**`coop_status`** — one call answers everything: who's online, what's running,
-what's locked, what's unread.
+### How it works inside
 
-**`ag_followup` / `copilot_followup` / `claude_followup`** — carries on the *same* conversation. So
-*"now make it work on mobile"* keeps all the context instead of starting cold.
-
----
-
-## How it works inside
-
-### Files on disk
+#### Files on disk
 
 ```
 ~/.antigravity-mcp/
@@ -227,72 +173,41 @@ what's locked, what's unread.
     └── <task_id>.err             stderr, if the run failed
 ```
 
-`board.json` holds `tasks`, `locks`, `notes`, `events`, and `presence`. Every
-write takes an exclusive lock (an atomically created directory — the one
-primitive that behaves the same on Windows and POSIX), then lands via
-write-temp-and-rename, so a crash can't leave a half-written board. Stale locks
-older than 20s are broken automatically.
+`board.json` holds `tasks`, `locks`, `notes`, `events`, and `presence`. Every write takes an exclusive lock (an atomically created directory — the one primitive that behaves the same on Windows and POSIX), then lands via write-temp-and-rename, so a crash can't leave a half-written board. Stale locks older than 20s are broken automatically.
 
-There's no SQLite. A native build would break `npx` on machines without a
-compiler, and `node:sqlite` is still experimental and Node 22+. The board takes
-a handful of small writes per minute, so a JSON file is the right size of tool.
+There's no SQLite. A native build would break `npx` on machines without a compiler, and `node:sqlite` is still experimental and Node 22+. The board takes a handful of small writes per minute, so a JSON file is the right size of tool.
 
-### Delegation
+#### Delegation
 
 `ag_delegate` shells out to:
-
 ```bash
 agy --print <brief> --output-format json --print-timeout <n>s \
     --add-dir <cwd> --mode accept-edits --dangerously-skip-permissions
 ```
 
 `copilot_delegate` shells out to:
-
 ```bash
 copilot -p <brief> --output-format json --add-dir <cwd> --allow-all-tools
 ```
 
 `claude_delegate` shells out to:
-
 ```bash
 claude <brief> --print --output-format json --add-dir <cwd> --dangerously-skip-permissions
 ```
 
-All three children are spawned **detached**, with output redirected straight
-to `runs/<task_id>.json`. That means a long job survives the MCP server being
-restarted — status is recovered by reading the run file and checking the PID,
-not by holding a child handle. agy and claude each emit one JSON object;
-copilot emits JSONL (one event per line, terminated by a `type: "result"`
-line) — all three get normalised to the same
-`{status, response, conversation_id, usage}` shape before landing on the
-board, so the rest of the server doesn't care which backend produced them.
+All three children are spawned **detached**, with output redirected straight to `runs/<task_id>.json`. That means a long job survives the MCP server being restarted — status is recovered by reading the run file and checking the PID, not by holding a child handle. agy and claude each emit one JSON object; copilot emits JSONL (one event per line, terminated by a `type: "result"` line) — all three get normalised to the same `{status, response, conversation_id, usage}` shape before landing on the board, so the rest of the server doesn't care which backend produced them.
 
-`ag_followup` reuses agy's `conversation_id` via `--conversation`;
-`copilot_followup` reuses Copilot's session id via `--resume`; `claude_followup`
-does the same via `claude`'s own `--resume`. Either way, context carries across
-calls. Note: copilot and claude have no session-level timeout flag (`agy`'s
-`--print-timeout` has no equivalent on either) — a hung job just stays
-"running" until it exits on its own or the matching `*_cancel` kills it.
+`ag_followup` reuses agy's `conversation_id` via `--conversation`; `copilot_followup` reuses Copilot's session id via `--resume`; `claude_followup` does the same via `claude`'s own `--resume`. Context carries across calls. Note: copilot and claude have no session-level timeout flag (`agy`'s `--print-timeout` has no equivalent on either) — a hung job just stays "running" until it exits on its own or the matching `*_cancel` kills it.
 
-### Path locks
+#### Path locks
+Paths are normalised with `path.resolve` and case-folded on Windows, so `C:\Proj` and `c:\proj` can't defeat the same lock. Overlap is checked in both directions — claiming `api/routes.ts` conflicts with a held `api/`, and claiming `api/` conflicts with a held `api/routes.ts`.
 
-Paths are normalised with `path.resolve` and case-folded on Windows, so
-`C:\Proj` and `c:\proj` can't defeat the same lock. Overlap is checked in both
-directions — claiming `api/routes.ts` conflicts with a held `api/`, and claiming
-`api/` conflicts with a held `api/routes.ts`.
+#### Agent identity
+Each side runs the same binary with a different `--agent <id>`. That id is what every board entry is attributed to. Two clients sharing one id makes their locks invisible to each other, which defeats the whole point.
 
-### Agent identity
+### Config generation
 
-Each side runs the same binary with a different `--agent <id>`. That id is what
-every board entry is attributed to. Two clients sharing one id makes their locks
-invisible to each other, which defeats the whole point.
-
----
-
-## Where configs get written
-
-`init` only touches tools it finds, and backs up any file it edits to
-`<file>.bak-antigravity-mcp`.
+`init` only touches tools it finds, and backs up any file it edits to `<file>.bak-antigravity-mcp`.
 
 | Tool | Config path | Key |
 |---|---|---|
@@ -307,33 +222,35 @@ invisible to each other, which defeats the whole point.
 | Antigravity IDE | `~/.gemini/antigravity-ide/mcp_config.json` | `mcpServers` |
 | GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `mcpServers` |
 
----
+You can also run these variations:
+```bash
+antigravity-mcp-server init --dry-run   # show changes, write nothing
+antigravity-mcp-server init --all       # also write configs for tools you haven't installed
+antigravity-mcp-server init --only claude-code,cursor
+antigravity-mcp-server init --global    # force the direct-command form
+antigravity-mcp-server init --npx       # force npx, even with a global install present
+```
 
-## Good to know
+A global install is worth the extra step over `npx`: your editor spawns this server on every session, and `npx` re-checks the registry on each launch and can silently pull a newer version mid-session — which matters here, since both agents need to speak the same board schema. A global install starts instantly and only changes version when you run `npm update -g` yourself. `init` detects a global install automatically and writes the direct command into every config; it only falls back to `npx` if it can't find one. No install (`npx antigravity-mcp-server init`) is fine if you just want to try it once.
 
-**Long jobs are safe.** Both backends run detached. If your editor or the
-server restarts, the job keeps going.
+### Good to know
 
-**Delegated agents edit without asking.** `ag_delegate` passes
-`--dangerously-skip-permissions`; `copilot_delegate` passes `--allow-all-tools`
-(the documented minimum Copilot needs to write files in non-interactive mode).
-Pass `auto_approve: false` on either to make it stop at prompts instead.
+**Long jobs are safe.** Both backends run detached. If your editor or the server restarts, the job keeps going.
 
-**One trap `init` handles for you, for agy.** In headless mode `agy` auto-denies
-every MCP call unless allow-listed in `~/.gemini/antigravity-cli/settings.json`.
-If that rule is missing, delegation still runs but coordination silently does
-nothing — the worst kind of failure, because it looks like it works. `init`
-adds `mcp(coop/*)`; `doctor` checks for it. Copilot has no equivalent trap: it
-was verified working with a plain `copilot mcp add --transport http` and no
-extra permission rule.
+**Delegated agents edit without asking.** `ag_delegate` passes `--dangerously-skip-permissions`; `copilot_delegate` passes `--allow-all-tools` (the documented minimum Copilot needs to write files in non-interactive mode). Pass `auto_approve: false` on either to make it stop at prompts instead.
 
-**Both work in their own scratch project** unless the target directory is in
-their workspace. Every hand-off passes `--add-dir <cwd>` and states the project
-root in the brief.
+**One trap `init` handles for you, for agy.** In headless mode `agy` auto-denies every MCP call unless allow-listed in `~/.gemini/antigravity-cli/settings.json`. If that rule is missing, delegation still runs but coordination silently does nothing — the worst kind of failure, because it looks like it works. `init` adds `mcp(coop/*)`; `doctor` checks for it. Copilot has no equivalent trap: it was verified working with a plain `copilot mcp add --transport http` and no extra permission rule.
 
----
+**Both work in their own scratch project** unless the target directory is in their workspace. Every hand-off passes `--add-dir <cwd>` and states the project root in the brief.
 
-## Settings
+**You need:** Node 18.17 or newer, and at least one delegation target (`agy`, `copilot`, or `claude`). You get the shared board either way — a missing CLI just means you can't hand work to that one.
+
+```bash
+antigravity-mcp-server doctor           # is everything working?
+antigravity-mcp-server doctor --probe   # same, plus a real round trip through agy
+```
+
+### Settings
 
 | | |
 |---|---|
@@ -343,12 +260,9 @@ root in the brief.
 | `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) |
 | `--agent <id>` | The name this instance uses on the board |
 
----
+### Setting it up by hand
 
-## Setting it up by hand
-
-With a global install (`npm install -g antigravity-mcp-server`), add this to
-your tool's MCP config:
+With a global install (`npm install -g antigravity-mcp-server`), add this to your tool's MCP config:
 
 ```json
 {
@@ -374,8 +288,7 @@ Without a global install, use `npx` instead:
 }
 ```
 
-On the Antigravity side, name the server `coop`, use `--agent antigravity`, and
-add this to `~/.gemini/antigravity-cli/settings.json`:
+On the Antigravity side, name the server `coop`, use `--agent antigravity`, and add this to `~/.gemini/antigravity-cli/settings.json`:
 
 ```json
 { "permissions": { "allow": ["mcp(coop/*)"] } }
@@ -383,24 +296,21 @@ add this to `~/.gemini/antigravity-cli/settings.json`:
 
 The server key must match the allow-rule — `coop` here, `mcp(coop/*)` there.
 
----
-
-## Working on the code
+### Working on the code
 
 ```bash
 git clone https://github.com/adeelali4/antigravity-mcp
 cd antigravity-mcp
 npm install
 
-npm test                             # 16 checks, two live stdio clients, no CLI credits used
+npm test                             # 26 checks, two live stdio clients, no CLI credits used
 node test/delegation.js              # real end-to-end run through agy (uses agy credits)
 node test/delegation-copilot.js      # real end-to-end run through copilot (uses Copilot credits)
 node test/delegation-claude.js       # real end-to-end run through another claude (uses API usage)
 node src/cli.js init --local --dry-run
 ```
 
-`npm test` spawns two real MCP clients as separate processes against one board,
-so cross-process locking and messaging are covered for real rather than mocked.
+`npm test` spawns two real MCP clients as separate processes against one board, so cross-process locking and messaging are covered for real rather than mocked.
 
 ---
 
