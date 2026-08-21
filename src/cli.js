@@ -7,12 +7,20 @@
  * stderr or the protocol breaks.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { runStdio } from "./server.js";
 import { init, printInit } from "./init.js";
 import { update, printUpdate } from "./update.js";
 import { doctor, printDoctor } from "./doctor.js";
+import { reset, printReset } from "./reset.js";
 import { startUiServer, DEFAULT_UI_PORT } from "./uiServer.js";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** Read from package.json so this can never drift from what's actually installed. */
+const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8")).version;
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] && !argv[0].startsWith("-") ? argv[0] : "serve";
@@ -31,6 +39,8 @@ const HELP = `
     antigravity-mcp-server init            Register the server into every MCP client found
     antigravity-mcp-server update          Update globally-installed server to latest version
     antigravity-mcp-server doctor          Check that every link in the chain works
+    antigravity-mcp-server reset           Wipe the shared board to recover from stuck state
+    antigravity-mcp-server version         Print the installed version (also: v, -v, --version)
     antigravity-mcp-server --help
 
   init options
@@ -42,6 +52,9 @@ const HELP = `
 
   doctor options
     --probe         Also run a live agy round trip (slower, uses agy quota)
+
+  reset options
+    --yes, -y       Actually perform the wipe (without this, acts as a dry-run)
 
   ui options
     --port <n>      Port to serve on (default ${DEFAULT_UI_PORT})
@@ -69,6 +82,10 @@ async function main() {
     console.log(HELP);
     return;
   }
+  if (has("--version") || has("-v") || cmd === "version" || cmd === "v") {
+    console.log(PKG_VERSION);
+    return;
+  }
 
   switch (cmd) {
     case "init": {
@@ -89,6 +106,10 @@ async function main() {
     }
     case "doctor": {
       process.exitCode = printDoctor(await doctor({ probe: has("--probe") })) ? 1 : 0;
+      return;
+    }
+    case "reset": {
+      process.exitCode = printReset(await reset({ yes: has("--yes") || has("-y") })) ? 1 : 0;
       return;
     }
     case "ui": {

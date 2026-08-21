@@ -74,6 +74,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
             status: prior?.status ?? "idle",
             currentTask: prior?.currentTask ?? null,
             model: prior?.model ?? null,
+            pid: prior?.pid ?? null,
+            cwd: prior?.cwd ?? null,
             // Reconnect resumes at its desk rather than wherever it was mid-walk.
             location: event.location ? resolveLocation(event.location, event.agentId, deskAssignments) : desk,
             targetLocation: null,
@@ -92,7 +94,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           break;
         }
         case "AGENT_TASK_CHANGED": {
-          touch(event.agentId, { currentTask: event.task ?? null, model: event.model ?? null });
+          touch(event.agentId, { currentTask: event.task ?? null, model: event.model ?? null, pid: event.pid ?? null, cwd: event.cwd ?? null });
           break;
         }
         case "AGENT_LOCATION_CHANGED": {

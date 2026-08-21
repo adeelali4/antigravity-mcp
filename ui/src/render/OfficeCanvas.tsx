@@ -188,6 +188,7 @@ export function OfficeCanvas({ engine, selectedId, onSelect }: Props) {
           <strong>{hover.agent.name}</strong>
           <span className="office-tooltip-status">{hover.agent.status}</span>
           {hover.agent.model && <div className="office-tooltip-model">{hover.agent.model}</div>}
+          {hover.agent.cwd && <div className="office-tooltip-cwd">/{hover.agent.cwd.split(/[\\/]/).pop()}</div>}
           {hover.agent.currentTask && <div className="office-tooltip-task">{hover.agent.currentTask}</div>}
         </div>
       )}

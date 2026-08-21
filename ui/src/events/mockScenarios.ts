@@ -254,6 +254,11 @@ export class MockAgentEventSource extends BaseEventSource {
 
   private setStatus(id: string, status: string, task: string | null) {
     this.emit({ type: "AGENT_STATUS_CHANGED", agentId: id, status });
-    this.emit({ type: "AGENT_TASK_CHANGED", agentId: id, task, model: task ? MODEL_BY_ID[id] ?? null : null });
+    const fakeCwd = `/Users/demo/projects/${id}-workspace`;
+    // deterministic fake pid
+    let fakePid = 0;
+    for (let i = 0; i < id.length; i++) fakePid += id.charCodeAt(i);
+    fakePid = 10000 + (fakePid % 90000);
+    this.emit({ type: "AGENT_TASK_CHANGED", agentId: id, task, model: MODEL_BY_ID[id] ?? null, pid: fakePid, cwd: fakeCwd });
   }
 }

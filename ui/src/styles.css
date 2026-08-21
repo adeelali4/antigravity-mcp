@@ -136,6 +136,11 @@ body {
   font-family: monospace;
   font-size: 11px;
 }
+.office-tooltip-cwd {
+  margin-top: 3px;
+  color: #8b91b8;
+  font-size: 11px;
+}
 .office-tooltip-task {
   margin-top: 3px;
   color: #c7cbe8;

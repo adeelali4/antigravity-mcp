@@ -174,8 +174,9 @@ Your agent picks these on its own using MCP.
 The three delegation lanes are symmetric — same shape, same behavior — so your agent picks whichever CLI you named. `claude_delegate` launches a fully independent `claude` CLI process, not a subagent inside the calling session — and because it's a plain `claude` invocation, it automatically inherits whatever MCP servers are registered at user scope, this one included, so a delegated Claude can call `coop_status` / `claim_paths` on itself with no extra setup.
 
 Two worth knowing about:
-- **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread. It also reaps every running task's real status first, and any lock still standing for a task that's already over is flagged `orphaned` with the reason why -- a finished task releases its own locks automatically, so a flag here means something slipped through (an old lock claimed without a task_id, say), not routine cleanup.
-- **`ag_followup` / `copilot_followup` / `claude_followup`** — carries on the *same* conversation. 
+- **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread. It also reaps every running task's real status first, and any lock still standing for a task that's already over is flagged `orphaned` with the reason why -- a finished task releases its own locks automatically, so a flag here means something slipped through (an old lock claimed without a task_id, say), not routine cleanup. Every response carries a `seq`; pass it back as `since_seq` on your next call and, if nothing changed, you get `{unchanged: true}` instead of the full payload. Empty sections (no locks, no unread notes, nothing active) are omitted from the response entirely rather than sent as empty arrays.
+- **`ag_followup` / `copilot_followup` / `claude_followup`** — carries on the *same* conversation.
+- **`*_task_status` / `*_task_wait`** — a long response comes back as a head/tail preview by default, not the whole thing; pass `output_mode: "full"` when you actually need every character. `include_usage_detail: true` gets you the backend's raw token/cost breakdown instead of the `{input_tokens, output_tokens, total_tokens}` summary returned by default.
 
 ### How it works inside
 
@@ -221,6 +222,42 @@ Paths are normalised with `path.resolve` and case-folded on Windows, so `C:\Proj
 
 #### Agent identity
 Each side runs the same binary with a different `--agent <id>`. That id is what every board entry is attributed to. Two clients sharing one id makes their locks invisible to each other, which defeats the whole point.
+
+**Two sessions launched with the same `--agent <id>` are handled automatically** -- the second one gets `<id>-2`, a third `<id>-3`, and so on, decided the instant it starts up, the same way a second copy of a file or window commonly gets "(2)" appended. Nothing to configure; it just works, whether the two sessions are two windows of the same tool, or genuinely unrelated processes that happened to pick the same id.
+
+The board itself is still global unless you change its home directory: every project and every session on the machine points at the same shared `board.json` by default. Auto-numbering keeps sessions from colliding, but the number alone doesn't tell you *which* is which -- if you'd rather have meaningful, chosen names (`claude-code-project-a` instead of `claude-code-2`), give each one a distinct `--agent <id>` yourself. A tool's config is normally one global file (`~/.claude.json` and similar), so the same entry applies to every window it opens; getting a different `--agent` per project means using that tool's **project-local** config instead (Claude Code, for one, reads a repo-level `.mcp.json` if present, layered on top of the global one) -- one file per project, not one shared file with two entries:
+
+```json
+// project-a/.mcp.json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "antigravity-mcp-server",
+      "args": ["--agent", "claude-code-project-a"]
+    }
+  }
+}
+```
+
+```json
+// project-b/.mcp.json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "antigravity-mcp-server",
+      "args": ["--agent", "claude-code-project-b"]
+    }
+  }
+}
+```
+
+(`init` doesn't generate project-local configs today -- it only writes the global ones in the table below -- so for now this means editing that file by hand per project. Two windows on the *same* project, sharing the *exact same* config, still just get auto-numbered like any other collision -- that's what the automatic handling above covers.)
+
+For full isolation -- not just a distinct identity, but an entirely separate board -- set a different `ANTIGRAVITY_MCP_HOME` per project the same way, instead of (or in addition to) a distinct `--agent`.
+
+`coop_status` also carries an `identity_collision` field as a backstop, for the rare case two processes end up on the same identity despite the auto-numbering (e.g. `COOP_AGENT` set directly instead of going through `--agent`). Look for it and the matching hint text if something still seems to be sharing a slot.
+
+If an identity's status looks permanently stuck, or the board seems to be carrying state from an old version, `antigravity-mcp-server reset --yes` wipes it clean (tasks, locks, notes, presence -- everything) and tells you to restart your sessions afterward. It resets the *whole* board, including anything other active sessions or other projects currently have on it, so use it when something is actually stuck, not routinely.
 
 ### Config generation
 

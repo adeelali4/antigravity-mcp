@@ -28,7 +28,7 @@ export function computeAgents(board) {
   const info = new Map();
 
   for (const [id, p] of Object.entries(board.presence || {})) {
-    info.set(id, { status: p.status, detail: p.detail, ts: p.ts });
+    info.set(id, { status: p.status, detail: p.detail, ts: p.ts, model: p.model, pid: p.pid, cwd: p.cwd });
   }
   // An agent can be meaningfully "present" via activity alone, even before
   // its first presence_set heartbeat lands.
@@ -70,22 +70,33 @@ export function computeAgents(board) {
     const p = info.get(id);
     const running = runningByOwner.get(id);
     const visiting = delegatorPartner.get(id);
+    const inMeeting = Boolean(running || visiting);
+    // A running delegated task means real, visible work -- surfaces even if
+    // presence_set was never called for this identity. A delegator visiting
+    // to hand off work keeps its OWN status otherwise (see delegatorPartner's
+    // comment) -- except "idle," which reads as a contradiction next to
+    // "in a meeting": bump that one case to "working," leave every other
+    // status (blocked, offline, whatever) exactly as reported.
+    const rawStatus = running ? "working" : p.status || "idle";
     const lastTs = Math.max(p.ts || 0, running?.updated || 0);
     agents.push({
       id,
       name: humanize(id),
       connected: now - lastTs < STALE_MS,
-      // A running delegated task means real, visible work -- surfaces even if
-      // presence_set was never called for this identity.
-      status: running ? "working" : p.status || "idle",
+      status: inMeeting && rawStatus === "idle" ? "working" : rawStatus,
       task: running ? running.title : p.detail || null,
-      // Only meaningful while a delegated task is actually running -- an
-      // agent isn't "using a model" while idle, it's just present.
-      model: running ? running.model || null : null,
+      // A running delegated task's model takes priority (that's what's
+      // actively costing tokens right now); otherwise fall back to whatever
+      // this identity self-reported about itself via presence_set, if it did.
+      model: running ? running.model || null : p.model || null,
+      // Which real OS process, in which directory, is currently behind this
+      // identity -- the thing that tells two same-named sessions apart.
+      pid: p.pid || null,
+      cwd: p.cwd || null,
       interactingWith: running ? running.assignedBy : visiting || null,
       // "home" is a sentinel the store resolves to this agent's own sticky
       // desk -- the bridge has no idea what desk id that is, nor should it.
-      location: running || visiting ? "meeting" : "home",
+      location: inMeeting ? "meeting" : "home",
     });
   }
   return agents;
@@ -95,7 +106,13 @@ export function toEvents(id, agent) {
   const events = [{ type: "AGENT_CONNECTED", agentId: id, name: agent.name }];
   if (!agent.connected) events.push({ type: "AGENT_DISCONNECTED", agentId: id });
   if (agent.status !== "idle") events.push({ type: "AGENT_STATUS_CHANGED", agentId: id, status: agent.status });
-  if (agent.task) events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task, model: agent.model });
+  // pid/cwd ride on this event too, so an agent that has them but no task and
+  // no model (a live session that never called presence_set) would otherwise
+  // never send them to a newly-connected client -- and diffAgents only ever
+  // re-sends this event on a *change*, so they'd never arrive at all.
+  if (agent.task || agent.model || agent.pid) {
+    events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task, model: agent.model, pid: agent.pid, cwd: agent.cwd });
+  }
   if (agent.location !== "home") events.push({ type: "AGENT_LOCATION_CHANGED", agentId: id, location: agent.location });
   if (agent.interactingWith) {
     events.push({ type: "AGENT_INTERACTION_STARTED", agentId: id, withAgentId: agent.interactingWith });
@@ -122,8 +139,8 @@ export function diffAgents(prevMap, nextList) {
       );
     }
     if (prev.status !== agent.status) events.push({ type: "AGENT_STATUS_CHANGED", agentId: id, status: agent.status });
-    if (prev.task !== agent.task || prev.model !== agent.model) {
-      events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task, model: agent.model });
+    if (prev.task !== agent.task || prev.model !== agent.model || prev.pid !== agent.pid || prev.cwd !== agent.cwd) {
+      events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task, model: agent.model, pid: agent.pid, cwd: agent.cwd });
     }
     if (prev.location !== agent.location) {
       events.push({ type: "AGENT_LOCATION_CHANGED", agentId: id, location: agent.location });

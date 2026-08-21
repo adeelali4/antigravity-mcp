@@ -50,6 +50,20 @@ export function AgentDetailPanel({ agent, otherAgentName, onClose }: Props) {
           </>
         )}
 
+        {agent.pid != null && (
+          <>
+            <dt>PID</dt>
+            <dd>{agent.pid}</dd>
+          </>
+        )}
+
+        {agent.cwd && (
+          <>
+            <dt>Directory</dt>
+            <dd>{agent.cwd}</dd>
+          </>
+        )}
+
         <dt>Location</dt>
         <dd>{loc.label}</dd>
 

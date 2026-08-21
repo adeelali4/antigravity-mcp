@@ -43,15 +43,28 @@ export function ensureDirs() {
 
 const LOCK_STALE_MS = 20_000;
 
+/**
+ * EEXIST is the ordinary "someone else holds it" answer. Windows also returns
+ * EPERM/EACCES for the same situation when the holder is releasing the lock at
+ * that exact moment: a directory being deleted lingers in a pending-delete
+ * state, and mkdir against that name fails with EPERM until it clears. Treated
+ * as a hard error, that surfaces as a failed tool call under nothing worse than
+ * normal multi-agent contention -- so they all mean "retry", and only the
+ * deadline below is allowed to give up.
+ */
+const CONTENDED = ["EEXIST", "EPERM", "EACCES"];
+
 async function acquire() {
   const lock = lockPath();
   const deadline = Date.now() + LOCK_STALE_MS + 5_000;
+  let lastErr = null;
   for (;;) {
     try {
       fs.mkdirSync(lock);
       return;
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      if (!CONTENDED.includes(err.code)) throw err;
+      lastErr = err;
       // Break a lock left behind by a process that died mid-write.
       try {
         if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
@@ -59,10 +72,18 @@ async function acquire() {
           continue;
         }
       } catch {
-        continue;
+        // Usually just lost a race with the holder releasing the lock. Fall
+        // through to the deadline check and the backoff below rather than
+        // retrying immediately: a stat that keeps failing while the directory
+        // keeps existing (a permissions or AV interaction) would otherwise
+        // spin here forever, with no await to yield the event loop and no
+        // deadline to stop it.
       }
       if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for board lock at ${lock}`);
+        // Carrying the last code matters: a genuine permissions problem now
+        // looks like contention until the deadline, and "EACCES" is the only
+        // thing that tells that apart from a real peer holding the lock.
+        throw new Error(`timed out waiting for board lock at ${lock} (last error: ${lastErr?.code ?? "none"})`);
       }
       await new Promise((r) => setTimeout(r, 25));
     }

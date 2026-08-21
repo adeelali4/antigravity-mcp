@@ -35,6 +35,10 @@ export interface Agent {
   currentTask: string | null;
   /** The model handling currentTask, e.g. "gemini-3.1-pro-high". Null while idle or unspecified. */
   model: string | null;
+  /** The real OS process id behind this agent. */
+  pid: number | null;
+  /** The working directory of the real OS process. */
+  cwd: string | null;
   /** A location id from office/layout.ts, e.g. "desk-2", "meeting", "lounge". */
   location: string;
   targetLocation: string | null;
@@ -48,7 +52,7 @@ export type AgentEvent =
   | { type: "AGENT_CONNECTED"; agentId: string; name: string; location?: string }
   | { type: "AGENT_DISCONNECTED"; agentId: string }
   | { type: "AGENT_STATUS_CHANGED"; agentId: string; status: string }
-  | { type: "AGENT_TASK_CHANGED"; agentId: string; task: string | null; model?: string | null }
+  | { type: "AGENT_TASK_CHANGED"; agentId: string; task: string | null; model?: string | null; pid?: number | null; cwd?: string | null }
   | { type: "AGENT_LOCATION_CHANGED"; agentId: string; location: string }
   | { type: "AGENT_INTERACTION_STARTED"; agentId: string; withAgentId: string; kind?: string }
   | { type: "AGENT_INTERACTION_ENDED"; agentId: string };

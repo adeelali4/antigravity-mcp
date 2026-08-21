@@ -9,7 +9,10 @@
  *     files.
  *
  * The same executable is registered on every side with a different `--agent`
- * id; that id is the identity everything on the board is attributed to.
+ * id; that id is the identity everything on the board is attributed to. Two
+ * concurrent processes launched with the SAME id get auto-disambiguated at
+ * startup (see resolveAgentIdentity()) rather than silently sharing one
+ * presence slot.
  */
 
 import path from "node:path";
@@ -43,11 +46,56 @@ const BACKENDS = {
   "claude-agent": { findBin: findClaude, spawn: spawnClaude, readResult: readClaudeResult, readStderr: readClaudeStderr },
 };
 
-export const AGENT = (() => {
+export let AGENT = (() => {
   const i = process.argv.indexOf("--agent");
   if (i !== -1 && process.argv[i + 1]) return process.argv[i + 1];
   return process.env.COOP_AGENT || "claude";
 })();
+
+/**
+ * Two real processes both launched with the same --agent id (e.g. two editor
+ * windows both configured as "claude-code") would otherwise silently share
+ * one presence slot and one set of lock ownership -- whichever last touched
+ * presence wins, clobbering the other, with no indication anything went
+ * wrong. Auto-disambiguate at startup instead, the same way a second copy of
+ * a file or window commonly gets "(2)" appended: if this identity's presence
+ * slot is currently held by a DIFFERENT, still-alive process, claim the next
+ * free "<id>-2", "<id>-3", ... suffix instead. The check-and-reserve happens
+ * in one mutate() call so two processes starting at the same instant can't
+ * both pick the same candidate.
+ */
+async function resolveAgentIdentity() {
+  const base = AGENT;
+  AGENT = await mutate((b) => {
+    let candidate = base;
+    for (let n = 2; n <= 50; n++) {
+      const existing = b.presence[candidate];
+      // Recency matters as much as liveness: pids get recycled (aggressively
+      // so on Windows), so isAlive() alone will happily report a long-dead
+      // session's slot as "held" by whatever unrelated process inherited its
+      // pid, permanently renaming this identity for no reason. A genuinely
+      // live peer heartbeats every 15s, so anything this stale is not one.
+      const fresh = Date.now() - (existing?.ts || 0) < 60_000;
+      const heldByOther = existing?.pid && existing.pid !== process.pid && fresh && isAlive(existing.pid);
+      if (!heldByOther) {
+        // Reserve immediately, in this same critical section -- a heartbeat
+        // will overwrite this moments later, but it must not be possible for
+        // a second process racing to start right now to see this slot as free.
+        b.presence[candidate] = {
+          status: existing?.status ?? "idle", detail: existing?.detail ?? "",
+          model: existing?.model ?? null, pid: process.pid, cwd: process.cwd(), ts: Date.now(),
+        };
+        return candidate;
+      }
+      candidate = `${base}-${n}`;
+    }
+    // Pathological case (50 concurrent sessions of one identity) -- pid is
+    // always unique, so this can never collide, even if it isn't pretty.
+    const fallback = `${base}-${process.pid}`;
+    b.presence[fallback] = { status: "idle", detail: "", model: null, pid: process.pid, cwd: process.cwd(), ts: Date.now() };
+    return fallback;
+  });
+}
 
 // Compact, not pretty-printed: this text is read by an LLM, not a human at a
 // terminal, and every tool call pays for the indentation whitespace in
@@ -74,6 +122,26 @@ function releaseTaskLocks(b, taskId) {
 }
 
 /**
+ * Presence is a single "what am I doing" slot per identity, set to "working"
+ * the moment delegateTask() starts a job -- nothing ever cleared it back to
+ * idle when the job finished, so a completed agent showed "working" in the
+ * office UI forever (the UI's own live-task check correctly falls back to
+ * this stale value once no genuinely running task exists). Reset it once
+ * this task is done, unless the same owner still has another task running.
+ */
+function settlePresence(b, owner, finishedTaskId) {
+  const stillBusy = b.tasks.some(
+    (t) => t.id !== finishedTaskId && t.owner === owner && t.kind === "delegated" && ["running", "queued"].includes(t.status)
+  );
+  if (!stillBusy && b.presence[owner]?.status === "working") {
+    // Spread, not a fresh object: model/pid/cwd are that agent's own
+    // self-reported facts and outlive any one task -- rebuilding the record
+    // from scratch here would silently drop them.
+    b.presence[owner] = { ...b.presence[owner], status: "idle", detail: "", ts: Date.now() };
+  }
+}
+
+/**
  * Reconcile a delegated task with what its backend actually left on disk.
  * Called before any read of task state, which is what makes status survive a
  * server restart.
@@ -96,6 +164,7 @@ async function reap(id) {
       task.durationSeconds = payload.duration_seconds;
       task.updated = Date.now();
       releaseTaskLocks(b, id);
+      settlePresence(b, task.owner, id);
       logEvent(b, AGENT, `task.${task.status}`, `${id} ${task.title}`);
       return task;
     });
@@ -108,6 +177,7 @@ async function reap(id) {
       task.error = backend?.readStderr(id) || `${t.owner} exited without producing output`;
       task.updated = Date.now();
       releaseTaskLocks(b, id);
+      settlePresence(b, task.owner, id);
       logEvent(b, AGENT, "task.failed", `${id} ${task.title}`);
       return task;
     });
@@ -119,6 +189,49 @@ function slim(t) {
   if (!t || t.error) return t;
   const { detail, ...rest } = t;
   return { ...rest, age: ago(t.created) };
+}
+
+/**
+ * Backend usage objects are wildly inconsistent in shape and, for claude and
+ * agy, can carry a full per-iteration cache/tool-use breakdown -- passed
+ * through verbatim from readResult(), it can run to hundreds of tokens for
+ * something a caller checking on a task almost always just wants a total
+ * for. Reduced to the handful of numbers actually useful for "how much did
+ * this cost" by default; the raw breakdown is still available on request.
+ */
+function summarizeUsage(usage) {
+  if (!usage || typeof usage !== "object") return usage;
+  const summary = {};
+  if (typeof usage.input_tokens === "number") summary.input_tokens = usage.input_tokens;
+  if (typeof usage.output_tokens === "number") summary.output_tokens = usage.output_tokens;
+  if (typeof usage.total_tokens === "number") {
+    summary.total_tokens = usage.total_tokens;
+  } else if (typeof summary.input_tokens === "number" && typeof summary.output_tokens === "number") {
+    summary.total_tokens = summary.input_tokens + summary.output_tokens;
+  }
+  if (typeof usage.totalApiDurationMs === "number") summary.api_duration_ms = usage.totalApiDurationMs;
+  if (typeof usage.premiumRequests === "number") summary.premium_requests = usage.premiumRequests;
+  // A shape this function doesn't recognize is more useful whole than empty.
+  return Object.keys(summary).length ? summary : usage;
+}
+
+const PREVIEW_HEAD = 1200;
+const PREVIEW_TAIL = 400;
+
+/**
+ * A delegated agent's final response can run to thousands of characters for
+ * a real coding task -- fine when the caller actually wants the full text,
+ * pure waste when it's just polling "is this done yet" and happens to catch
+ * it right as it flips to done. Head+tail keeps both the opening explanation
+ * and any closing summary, which is usually enough to judge success without
+ * the whole transcript; the caller can always ask for output_mode:"full".
+ */
+function previewResult(text) {
+  const total = text.length;
+  if (total <= PREVIEW_HEAD + PREVIEW_TAIL + 200) return text; // not worth truncating
+  const head = text.slice(0, PREVIEW_HEAD);
+  const tail = text.slice(-PREVIEW_TAIL);
+  return `${head}\n\n...[truncated -- ${total} chars total; call again with output_mode:"full" for everything]...\n\n${tail}`;
 }
 
 /**
@@ -167,7 +280,10 @@ async function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, 
       b.locks = b.locks.filter((l) => l.path !== p);
       b.locks.push({ path: p, owner, taskId: id, note: title, created: now });
     }
-    b.presence[owner] = { status: "working", detail: title, ts: now };
+    // Spread, for the same reason settlePresence() does: if this delegate runs
+    // its own copy of this server, model/pid/cwd are facts it reported about
+    // itself, not ours to overwrite just because we handed it a task.
+    b.presence[owner] = { ...b.presence[owner], status: "working", detail: title, ts: now };
     logEvent(b, AGENT, "task.delegated", `${id} ${title}`);
     return null;
   });
@@ -238,6 +354,7 @@ async function cancelTask(task_id) {
     task.status = "cancelled";
     task.updated = Date.now();
     releaseTaskLocks(b, task_id);
+    settlePresence(b, task.owner, task_id);
     logEvent(b, AGENT, "task.cancelled", task_id);
   });
   return { task_id, status: "cancelled", released_locks: true };
@@ -253,23 +370,33 @@ async function cancelTask(task_id) {
 function registerBackendStatusTools(server, { toolPrefix, label, conversationIdNote = "" }) {
   const idNote = conversationIdNote ? ` ${conversationIdNote}` : "";
 
+  // Shared by *_task_status and both return points of *_task_wait, so the
+  // trim behaves identically everywhere a task record leaves this server.
+  const trim = (t, { include_output, include_usage_detail, output_mode }) => {
+    if (!t || t.error) return t;
+    if (!include_output) delete t.result;
+    else if (output_mode !== "full" && typeof t.result === "string") t.result = previewResult(t.result);
+    if (!include_usage_detail && t.usage) t.usage = summarizeUsage(t.usage);
+    return t;
+  };
+
   server.registerTool(
     `${toolPrefix}_task_status`,
     {
       title: `Check a delegated ${label} task`,
       description:
         `Check a delegated ${label} task: running / done / failed, plus its final ` +
-        `response and conversation_id${idNote} once finished.`,
+        `response and conversation_id${idNote} once finished. By default a long response ` +
+        `comes back as a head/tail preview, not the whole thing -- pass output_mode:"full" for everything.`,
       inputSchema: {
         task_id: z.string(),
         include_output: z.boolean().optional(),
+        include_usage_detail: z.boolean().optional(),
+        output_mode: z.enum(["preview", "full"]).optional(),
       },
     },
-    async ({ task_id, include_output = true }) => {
-      const t = slim(await reap(task_id));
-      if (!include_output && t) delete t.result;
-      return ok(t);
-    }
+    async ({ task_id, include_output = true, include_usage_detail = false, output_mode = "preview" }) =>
+      ok(trim(slim(await reap(task_id)), { include_output, include_usage_detail, output_mode }))
   );
 
   server.registerTool(
@@ -279,17 +406,22 @@ function registerBackendStatusTools(server, { toolPrefix, label, conversationIdN
       description:
         `Block until a delegated ${label} task finishes, or until timeout. Prefer ` +
         `${toolPrefix}_task_status and doing your own work in between -- only wait when you ` +
-        `genuinely cannot proceed without ${label}'s result.`,
+        `genuinely cannot proceed without ${label}'s result. Waiting costs nothing while blocked, ` +
+        `so the default timeout is generous -- raise it further rather than re-polling in a loop.`,
       inputSchema: {
         task_id: z.string(),
         timeout_seconds: z.number().int().optional(),
+        include_usage_detail: z.boolean().optional(),
+        output_mode: z.enum(["preview", "full"]).optional(),
       },
     },
-    async ({ task_id, timeout_seconds = 120 }) => {
+    async ({ task_id, timeout_seconds = 300, include_usage_detail = false, output_mode = "preview" }) => {
       const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
       for (;;) {
         const t = await reap(task_id);
-        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) return ok(slim(t));
+        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) {
+          return ok(trim(slim(t), { include_output: true, include_usage_detail, output_mode }));
+        }
         if (Date.now() >= deadline) {
           return ok({ ...slim(t), timed_out_waiting: true, note: `Still running. Call ${toolPrefix}_task_status later.` });
         }
@@ -309,8 +441,9 @@ function registerBackendStatusTools(server, { toolPrefix, label, conversationIdN
   );
 }
 
-export function buildServer() {
+export async function buildServer() {
   ensureDirs();
+  await resolveAgentIdentity();
 
   // Heartbeat: MCP gives no onDisconnect hook, so a live consumer (e.g. a UI
   // bridge watching the board) has no way to tell "connected but idle" apart
@@ -320,7 +453,18 @@ export function buildServer() {
     try {
       await mutate((b) => {
         const existing = b.presence[AGENT];
-        b.presence[AGENT] = { status: existing?.status ?? "idle", detail: existing?.detail ?? "", ts: Date.now() };
+        // pid/cwd are this process's own, always current; model/status/detail
+        // are whatever was last self-reported -- carried forward explicitly
+        // since this replaces the whole record every 15s, and a field this
+        // loop doesn't know about would otherwise quietly vanish next beat.
+        b.presence[AGENT] = {
+          status: existing?.status ?? "idle",
+          detail: existing?.detail ?? "",
+          model: existing?.model ?? null,
+          pid: process.pid,
+          cwd: process.cwd(),
+          ts: Date.now(),
+        };
       });
     } catch (e) {
       // Background heartbeat shouldn't crash the server if it fails (e.g. if the lock times out).
@@ -348,14 +492,17 @@ export function buildServer() {
       title: "Coordination status",
       description:
         "One-stop situational awareness: who's online, active tasks, locked paths, unread notes, and orphaned locks. " +
-        "Call before editing to avoid conflicts.",
-      inputSchema: {},
+        "Call before editing to avoid conflicts. Pass since_seq (the seq this call returns) next time to get back " +
+        "{unchanged:true} instead of the full payload when nothing has changed. Flags identity_collision if another " +
+        "real process is registered under this same --agent id, sharing your presence slot and lock ownership.",
+      inputSchema: { since_seq: z.number().int().optional() },
     },
-    async () => {
+    async ({ since_seq } = {}) => {
       for (const t of read().tasks.filter((x) => x.kind === "delegated" && ["running", "queued"].includes(x.status))) {
         await reap(t.id);
       }
       const b = read();
+      if (since_seq != null && b.seq === since_seq) return ok({ unchanged: true, seq: b.seq });
       const taskById = new Map(b.tasks.map((t) => [t.id, t]));
       const lockedPaths = b.locks.map((l) => {
         const task = l.taskId ? taskById.get(l.taskId) : null;
@@ -374,29 +521,61 @@ export function buildServer() {
         };
       });
       const orphanedCount = lockedPaths.filter((l) => l.orphaned).length;
+      // Two real processes registered under the same --agent id (e.g. two
+      // Claude Code windows both launched as "claude-code") silently share
+      // one presence slot and one set of locks -- whichever last touched
+      // presence wins, clobbering the other. Since every heartbeat stamps
+      // its own real pid, a mismatch here means exactly that just happened.
+      const myPresence = b.presence[AGENT];
+      // Same freshness reasoning as resolveAgentIdentity(): pids get recycled
+      // (aggressively on Windows), so a stale record could otherwise flag a
+      // long-gone sibling as a live collision for up to 15s after it exited.
+      const collisionFresh = Date.now() - (myPresence?.ts || 0) < 60_000;
+      const identityCollision = myPresence?.pid && myPresence.pid !== process.pid && collisionFresh && isAlive(myPresence.pid);
+      const activeTasks = b.tasks
+        .filter((t) => ["open", "running", "queued", "blocked"].includes(t.status))
+        .map((t) => ({
+          id: t.id, title: t.title, owner: t.owner, status: t.status,
+          kind: t.kind, cwd: t.cwd, age: ago(t.created),
+        }));
+      const unreadNotes = b.notes
+        .filter((n) => [AGENT, "all"].includes(n.to) && n.from !== AGENT && !n.readAt)
+        .map((n) => ({ id: n.id, from: n.from, body: n.body, when: ago(n.created) }));
+      // 6, not 12 -- an LLM reader rarely needs a deep history to orient
+      // itself, and this list is included on every single call.
+      const recentActivity = b.events.slice(-6).reverse().map((e) => ({
+        agent: e.agent, kind: e.kind, detail: e.detail, when: ago(e.ts),
+      }));
       return ok({
         you_are: AGENT,
+        seq: b.seq,
         presence: Object.entries(b.presence).map(([agent, p]) => ({
           agent, status: p.status, detail: p.detail, last_seen: ago(p.ts),
+          ...(p.model && { model: p.model }),
+          ...(p.pid && { pid: p.pid, cwd: p.cwd }),
         })),
-        active_tasks: b.tasks
-          .filter((t) => ["open", "running", "queued", "blocked"].includes(t.status))
-          .map((t) => ({
-            id: t.id, title: t.title, owner: t.owner, status: t.status,
-            kind: t.kind, cwd: t.cwd, age: ago(t.created),
-          })),
-        locked_paths: lockedPaths,
-        unread_notes: b.notes
-          .filter((n) => [AGENT, "all"].includes(n.to) && n.from !== AGENT && !n.readAt)
-          .map((n) => ({ id: n.id, from: n.from, body: n.body, when: ago(n.created) })),
-        recent_activity: b.events.slice(-12).reverse().map((e) => ({
-          agent: e.agent, kind: e.kind, detail: e.detail, when: ago(e.ts),
-        })),
+        // Nothing locked/pending/unread is the common case -- omitting the
+        // key entirely reads the same to an LLM as an empty array, for free.
+        ...(activeTasks.length && { active_tasks: activeTasks }),
+        ...(lockedPaths.length && { locked_paths: lockedPaths }),
+        ...(unreadNotes.length && { unread_notes: unreadNotes }),
+        ...(recentActivity.length && { recent_activity: recentActivity }),
+        ...(identityCollision && {
+          identity_collision: {
+            agent: AGENT, your_pid: process.pid, your_cwd: process.cwd(),
+            other_pid: myPresence.pid, other_cwd: myPresence.cwd,
+          },
+        }),
         hint:
           "Locked paths belong to their owner. Do not edit them; use notes_send instead." +
           (orphanedCount
             ? ` ${orphanedCount} lock(s) are marked orphaned -- their task is already over. ` +
               "Point it out to that agent (notes_send) rather than editing past it."
+            : "") +
+          (identityCollision
+            ? ` identity_collision: another process is ALSO registered as "${AGENT}" (pid ${myPresence.pid}, ` +
+              `cwd ${myPresence.cwd}) -- you're sharing one presence slot and lock ownership with it, which is ` +
+              "almost certainly unintended. Give each concurrent session its own --agent id."
             : ""),
       });
     }
@@ -813,15 +992,22 @@ export function buildServer() {
       title: "Announce what you are doing",
       description:
         "Announce what you are doing right now, so the other agent's coop_status shows " +
-        "it. Call when you start and finish a chunk of work.",
+        "it. Call when you start and finish a chunk of work. Pass model once at session " +
+        "start (e.g. \"claude-sonnet-5\") if you know it -- otherwise this identity shows no " +
+        "model while idle, since model is normally only known for an active delegated task.",
       inputSchema: {
         status: z.enum(["idle", "working", "blocked", "offline"]),
         detail: z.string().optional(),
+        model: z.string().optional(),
       },
     },
-    async ({ status, detail = "" }) => {
+    async ({ status, detail = "", model }) => {
       await mutate((b) => {
-        b.presence[AGENT] = { status, detail, ts: Date.now() };
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = {
+          status, detail, model: model ?? existing?.model ?? null,
+          pid: process.pid, cwd: process.cwd(), ts: Date.now(),
+        };
         logEvent(b, AGENT, "presence", `${status}: ${detail.slice(0, 80)}`);
       });
       return ok({ agent: AGENT, status, detail });
@@ -868,6 +1054,6 @@ export function buildServer() {
 }
 
 export async function runStdio() {
-  const server = buildServer();
+  const server = await buildServer();
   await server.connect(new StdioServerTransport());
 }
