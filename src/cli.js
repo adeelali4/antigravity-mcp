@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import { runStdio } from "./server.js";
 import { init, printInit } from "./init.js";
+import { update, printUpdate } from "./update.js";
 import { doctor, printDoctor } from "./doctor.js";
 import { startUiServer, DEFAULT_UI_PORT } from "./uiServer.js";
 
@@ -28,6 +29,7 @@ const HELP = `
     antigravity-mcp-server                 Run the MCP server on stdio (how clients launch it)
     antigravity-mcp-server ui              Open the office visualization (agents, tasks, board)
     antigravity-mcp-server init            Register the server into every MCP client found
+    antigravity-mcp-server update          Update globally-installed server to latest version
     antigravity-mcp-server doctor          Check that every link in the chain works
     antigravity-mcp-server --help
 
@@ -79,6 +81,10 @@ async function main() {
           launchMode: has("--global") ? "global" : has("--npx") ? "npx" : has("--local") ? "local" : "auto",
         })
       );
+      return;
+    }
+    case "update": {
+      process.exitCode = printUpdate(await update()) ? 1 : 0;
       return;
     }
     case "doctor": {

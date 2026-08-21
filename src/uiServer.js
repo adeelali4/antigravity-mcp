@@ -68,6 +68,11 @@ export function startUiServer({ port = DEFAULT_UI_PORT } = {}) {
 
   const server = http.createServer(serveStatic);
   const wss = new WebSocketServer({ server });
+  // `wss` re-emits the underlying http server's errors (e.g. EADDRINUSE) on
+  // itself too, separately from `server`'s own 'error' event below -- an
+  // EventEmitter's unhandled 'error' event is a hard crash by default, and
+  // the reject() below only covers `server`'s copy of it, not this one.
+  wss.on("error", () => {});
 
   let known = new Map(); // id -> last-broadcast agent row, for both diffing and hydrating new clients
 

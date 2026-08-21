@@ -12,6 +12,7 @@ export function DebugControls({ agents, dispatch }: Props) {
   const [targetId, setTargetId] = useState<string>("");
   const [partnerId, setPartnerId] = useState<string>("");
   const [task, setTask] = useState("");
+  const [model, setModel] = useState("");
 
   const target = agents.find((a) => a.id === targetId) ?? agents[0] ?? null;
 
@@ -61,7 +62,12 @@ export function DebugControls({ agents, dispatch }: Props) {
                 Task
                 <div className="debug-row">
                   <input value={task} onChange={(e) => setTask(e.target.value)} placeholder="Task description" />
-                  <button onClick={() => dispatch({ type: "AGENT_TASK_CHANGED", agentId: target.id, task: task || null })}>
+                  <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model (optional)" />
+                  <button
+                    onClick={() =>
+                      dispatch({ type: "AGENT_TASK_CHANGED", agentId: target.id, task: task || null, model: model || null })
+                    }
+                  >
                     Set
                   </button>
                 </div>

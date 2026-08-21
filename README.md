@@ -4,7 +4,7 @@
 
 **Let multiple AI agents build your app at the same time — without stepping on each other.**
 
-Hand work to Antigravity or GitHub Copilot, keep working yourself, and none of you break each other's files.
+Hand work to Antigravity, GitHub Copilot, or another Claude, keep working yourself, and none of you break each other's files.
 
 [![npm](https://img.shields.io/npm/v/antigravity-mcp-server.svg)](https://www.npmjs.com/package/antigravity-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -58,6 +58,20 @@ antigravity-mcp-server init
 ```
 
 `init` does the heavy lifting for you: it finds every AI tool on your computer and automatically wires them up to the shared board. Just restart your AI tools, and you're ready to go!
+
+---
+
+## Two things you need, and neither is "all of them"
+
+**A host.** This is whichever AI coding tool you actually type into day to day — Claude Code, Cursor, Windsurf, Gemini CLI, Claude Desktop, VS Code with Copilot, OpenCode, or even the Antigravity or Copilot CLIs themselves. You need at least one of these already installed; that's what `init` is looking for when it says it "finds every AI tool on your computer." No host, nothing to plug into.
+
+**Delegation backends.** This is who your host can actually hand work *off* to: Antigravity's `agy`, the GitHub `copilot` CLI, or another Claude Code CLI. You do **not** need all three — any combination works, including just one:
+
+- Only Copilot CLI and Antigravity installed, no separate Claude CLI? Fine — `ag_delegate` and `copilot_delegate` both work. `claude_delegate` just isn't available until you add another Claude Code CLI.
+- Only a second Claude Code CLI and Antigravity, no Copilot? Same idea — you get `ag_delegate` and `claude_delegate`, minus the Copilot one.
+- None installed yet? You still get the shared board — presence, locks, notes — your agent just can't delegate anywhere until you add a backend.
+
+**When to run `init`:** right after you install this package, and again any time your setup changes — a new host editor, or a new delegation backend CLI you didn't have before. It's safe to run as often as you like: it only touches tools it actually finds on your machine, and it backs up anything it edits first.
 
 ---
 
@@ -251,7 +265,10 @@ A global install is worth the extra step over `npx`: your editor spawns this ser
 ```bash
 antigravity-mcp-server doctor           # is everything working?
 antigravity-mcp-server doctor --probe   # same, plus a real round trip through agy
+antigravity-mcp-server update           # forgot the npm command? this finds your global install and updates it
 ```
+
+`update` figures out how you're running this and does the right thing: a real global install gets `npm install -g` to the latest version (with live output, so you can watch it happen); running via `npx` already re-fetches latest on every launch, so it just tells you there's nothing to do; running from a git checkout (like this one) tells you to `git pull` instead, since there's no package to update.
 
 ### Settings
 

@@ -14,6 +14,19 @@ const ROSTER: { id: string; name: string }[] = [
   { id: "amp", name: "Amp" }, // 9th agent: demonstrates overflow past 8 desks
 ];
 
+/** Representative model per demo agent, just so the hover tooltip has something real-looking to show. */
+const MODEL_BY_ID: Record<string, string> = {
+  claude: "claude-sonnet-5",
+  antigravity: "gemini-3.1-pro-high",
+  copilot: "gpt-5.1",
+  gemini: "gemini-3.1-pro",
+  cursor: "claude-sonnet-5",
+  windsurf: "gpt-5",
+  opencode: "claude-sonnet-5",
+  aider: "gpt-5",
+  amp: "claude-sonnet-5",
+};
+
 const DEV_TASKS = [
   "Implement authentication middleware",
   "Build the office simulation frontend",
@@ -241,6 +254,6 @@ export class MockAgentEventSource extends BaseEventSource {
 
   private setStatus(id: string, status: string, task: string | null) {
     this.emit({ type: "AGENT_STATUS_CHANGED", agentId: id, status });
-    this.emit({ type: "AGENT_TASK_CHANGED", agentId: id, task });
+    this.emit({ type: "AGENT_TASK_CHANGED", agentId: id, task, model: task ? MODEL_BY_ID[id] ?? null : null });
   }
 }

@@ -130,6 +130,12 @@ body {
   color: #8b91b8;
   text-transform: capitalize;
 }
+.office-tooltip-model {
+  margin-top: 3px;
+  color: #6ee7c8;
+  font-family: monospace;
+  font-size: 11px;
+}
 .office-tooltip-task {
   margin-top: 3px;
   color: #c7cbe8;
@@ -287,6 +293,11 @@ body {
 }
 .detail-muted {
   color: #5a5f78;
+}
+.detail-model {
+  font-family: monospace;
+  font-size: 12px;
+  color: #6ee7c8;
 }
 
 /* ------------------------------------------------------------ debug panel */

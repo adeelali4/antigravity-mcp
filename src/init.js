@@ -13,8 +13,8 @@ const CLI = path.join(HERE, "cli.js");
 
 const PKG = JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8"));
 /** Read from package.json so renaming the package needs no edits here. */
-const PKG_NAME = PKG.name;
-const BIN_NAME = Object.keys(PKG.bin || {})[0] || PKG_NAME;
+export const PKG_NAME = PKG.name;
+export const BIN_NAME = Object.keys(PKG.bin || {})[0] || PKG_NAME;
 
 /**
  * A bin resolved from an npx cache (~/.npm/_npx/... or a temp dir) is not a
@@ -24,7 +24,7 @@ function isNpxCache(resolved) {
   return /[\\/](_npx|npm-cache)[\\/]/.test(resolved) || /[\\/]Temp[\\/]/i.test(resolved);
 }
 
-function findGlobalBin() {
+export function findGlobalBin() {
   try {
     const probe = spawnSync(WIN ? "where" : "which", [BIN_NAME], { encoding: "utf8" });
     const hit = (probe.stdout || "").split(/\r?\n/).find((l) => l.trim());

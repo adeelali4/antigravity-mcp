@@ -79,6 +79,9 @@ export function computeAgents(board) {
       // presence_set was never called for this identity.
       status: running ? "working" : p.status || "idle",
       task: running ? running.title : p.detail || null,
+      // Only meaningful while a delegated task is actually running -- an
+      // agent isn't "using a model" while idle, it's just present.
+      model: running ? running.model || null : null,
       interactingWith: running ? running.assignedBy : visiting || null,
       // "home" is a sentinel the store resolves to this agent's own sticky
       // desk -- the bridge has no idea what desk id that is, nor should it.
@@ -92,7 +95,7 @@ export function toEvents(id, agent) {
   const events = [{ type: "AGENT_CONNECTED", agentId: id, name: agent.name }];
   if (!agent.connected) events.push({ type: "AGENT_DISCONNECTED", agentId: id });
   if (agent.status !== "idle") events.push({ type: "AGENT_STATUS_CHANGED", agentId: id, status: agent.status });
-  if (agent.task) events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task });
+  if (agent.task) events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task, model: agent.model });
   if (agent.location !== "home") events.push({ type: "AGENT_LOCATION_CHANGED", agentId: id, location: agent.location });
   if (agent.interactingWith) {
     events.push({ type: "AGENT_INTERACTION_STARTED", agentId: id, withAgentId: agent.interactingWith });
@@ -119,7 +122,9 @@ export function diffAgents(prevMap, nextList) {
       );
     }
     if (prev.status !== agent.status) events.push({ type: "AGENT_STATUS_CHANGED", agentId: id, status: agent.status });
-    if (prev.task !== agent.task) events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task });
+    if (prev.task !== agent.task || prev.model !== agent.model) {
+      events.push({ type: "AGENT_TASK_CHANGED", agentId: id, task: agent.task, model: agent.model });
+    }
     if (prev.location !== agent.location) {
       events.push({ type: "AGENT_LOCATION_CHANGED", agentId: id, location: agent.location });
     }

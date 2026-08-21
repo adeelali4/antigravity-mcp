@@ -49,8 +49,11 @@ export const AGENT = (() => {
   return process.env.COOP_AGENT || "claude";
 })();
 
+// Compact, not pretty-printed: this text is read by an LLM, not a human at a
+// terminal, and every tool call pays for the indentation whitespace in
+// tokens -- across every tool response, for the life of the session.
 const ok = (obj) => ({
-  content: [{ type: "text", text: JSON.stringify(obj, null, 2) }],
+  content: [{ type: "text", text: JSON.stringify(obj) }],
 });
 
 /**
@@ -157,7 +160,7 @@ async function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, 
     if (raceConflicts.length) return raceConflicts;
 
     b.tasks.push({
-      id, title, detail: prompt, owner, assignedBy: AGENT,
+      id, title, detail: prompt, owner, assignedBy: AGENT, model: spawnExtra?.model || null,
       status: "running", cwd, kind: "delegated", pid, created: now, updated: now,
     });
     for (const p of claim) {
@@ -217,7 +220,9 @@ async function followupTask({ owner, task_id, prompt, spawn, buildExtra }) {
     b.tasks.push({
       id, title: `follow-up: ${parent.title}`, detail: prompt, owner,
       assignedBy: AGENT, status: "running", cwd: parent.cwd, kind: "delegated",
-      conversationId: parent.conversationId, pid, created: now, updated: now,
+      // A follow-up continues the same conversation/session, so it's the
+      // same model even though nothing about model choice is re-specified.
+      conversationId: parent.conversationId, model: parent.model ?? null, pid, created: now, updated: now,
     });
     logEvent(b, AGENT, "task.followup", `${id} <- ${task_id}`);
   });
@@ -329,15 +334,11 @@ export function buildServer() {
     { name: "antigravity", version: "0.1.0" },
     {
       instructions:
-        "Shared coordination channel with the Antigravity CLI (agy) and the GitHub " +
-        "Copilot CLI (copilot), plus the ability to delegate work to either headlessly.\n\n" +
-        "Working agreement:\n" +
-        "- Call coop_status at the start of a work session and before touching files.\n" +
-        "- Call claim_paths on files you are about to edit, release_paths when done.\n" +
-        "- Never edit a path another agent holds; send a note instead.\n" +
-        "- No fixed split: a delegated agent can be handed any kind of task -- backend, " +
-        "tests, docs, a refactor -- not just UI/UX. Split along whatever contract fits " +
-        "the actual feature.",
+        "Shared MCP for delegating to agy/copilot and a shared coordination board.\n" +
+        "Working rules:\n" +
+        "- Call coop_status before starting work; claim_paths before edits and release_paths after.\n" +
+        "- Don't edit paths another agent holds; send a note instead.\n" +
+        "- Delegations may be any task; split work by clear contract.",
     }
   );
 
@@ -346,13 +347,8 @@ export function buildServer() {
     {
       title: "Coordination status",
       description:
-        "One-stop situational awareness: who is online, what each agent is running, " +
-        "which paths are locked, open tasks, and unread notes addressed to you. Also " +
-        "the checkpoint where you look out for the OTHER agent: any lock still standing " +
-        "for a task that's actually finished is called out as orphaned, so you can " +
-        "flag it or nudge them rather than silently working around a lock that never " +
-        "should have outlived its task. Call this before starting work or editing " +
-        "files so you do not collide with the other agent.",
+        "One-stop situational awareness: who's online, active tasks, locked paths, unread notes, and orphaned locks. " +
+        "Call before editing to avoid conflicts.",
       inputSchema: {},
     },
     async () => {
@@ -411,15 +407,9 @@ export function buildServer() {
     {
       title: "Delegate a task to Antigravity",
       description:
-        "Hand a task to Antigravity. Starts `agy` headlessly as a detached background " +
-        "job and returns immediately with a task_id -- it does NOT block, so keep " +
-        "working on your own part meanwhile.\n\n" +
-        "Write `prompt` as a complete, self-contained brief: Antigravity cannot see " +
-        "your conversation or your context. State the goal, the stack and conventions " +
-        "actually in use, the files it owns, what it must NOT touch, and the API/prop " +
-        "contract it must code against.\n\n" +
-        "`claim` locks paths for Antigravity up front so you stay off them. " +
-        "`auto_approve` passes --dangerously-skip-permissions so it can edit unattended.",
+        "Delegate a task to Antigravity (agy). Starts agy detached and returns a task_id immediately. " +
+        "Provide prompt as a complete, self-contained brief: goal, stack/conventions, files owned, what NOT to touch, and the API/contract. " +
+        "Use claim to reserve paths; auto_approve enables unattended edits.",
       inputSchema: {
         title: z.string().describe("Short label for the board"),
         prompt: z.string().describe("Self-contained brief; Antigravity starts cold"),
@@ -482,17 +472,9 @@ export function buildServer() {
     {
       title: "Delegate a task to GitHub Copilot CLI",
       description:
-        "Hand a task to the GitHub Copilot CLI (`copilot`). Starts it headlessly as a " +
-        "detached background job and returns immediately with a task_id -- it does NOT " +
-        "block, so keep working on your own part meanwhile.\n\n" +
-        "Write `prompt` as a complete, self-contained brief: Copilot cannot see your " +
-        "conversation or your context. State the goal, the stack and conventions actually " +
-        "in use, the files it owns, what it must NOT touch, and the API/prop contract it " +
-        "must code against.\n\n" +
-        "`claim` locks paths for Copilot up front so you stay off them. `auto_approve` " +
-        "passes --allow-all-tools so it can edit unattended. Unlike agy, copilot has no " +
-        "session-level timeout -- a hung job just stays 'running' until it exits or " +
-        "copilot_cancel kills it.",
+        "Delegate to the Copilot CLI. Starts detached and returns a task_id immediately. " +
+        "Prompt must be a self-contained brief: goal, stack/conventions, files owned, what NOT to touch, and the API/contract. " +
+        "Use claim to reserve paths; auto_approve allows unattended edits. Note: Copilot has no session-level timeout — hung jobs persist until they exit or copilot_cancel kills them.",
       inputSchema: {
         title: z.string().describe("Short label for the board"),
         prompt: z.string().describe("Self-contained brief; Copilot starts cold"),
@@ -553,16 +535,9 @@ export function buildServer() {
     {
       title: "Delegate a task to another Claude Code instance",
       description:
-        "Hand a task to a fully independent `claude` CLI process -- another Claude, not " +
-        "a subagent inside this session. Starts it headlessly as a detached background " +
-        "job and returns immediately with a task_id -- it does NOT block, so keep " +
-        "working on your own part meanwhile.\n\n" +
-        "Write `prompt` as a complete, self-contained brief: the other instance cannot " +
-        "see this conversation or your context. State the goal, the stack and " +
-        "conventions actually in use, the files it owns, what it must NOT touch, and the " +
-        "contract it must code against, same as delegating to agy or Copilot.\n\n" +
-        "`claim` locks paths for it up front so you stay off them. `auto_approve` passes " +
-        "--dangerously-skip-permissions so it can edit unattended.",
+        "Delegate to an independent Claude CLI process. Starts detached and returns a task_id immediately. " +
+        "Prompt must be a self-contained brief: goal, stack/conventions, files owned, what NOT to touch, and the contract. " +
+        "Use claim to reserve paths; auto_approve enables unattended edits.",
       inputSchema: {
         title: z.string().describe("Short label for the board"),
         prompt: z.string().describe("Self-contained brief; the other instance starts cold"),
@@ -683,7 +658,7 @@ export function buildServer() {
         limit: z.number().int().optional(),
       },
     },
-    async ({ owner, include_done = false, limit = 40 }) => {
+    async ({ owner, include_done = false, limit = 20 }) => {
       let items = read().tasks;
       if (owner) items = items.filter((t) => t.owner === owner);
       if (!include_done) items = items.filter((t) => !["done", "cancelled", "failed"].includes(t.status));
@@ -820,7 +795,7 @@ export function buildServer() {
         limit: z.number().int().optional(),
       },
     },
-    async ({ unread_only = true, mark_read = true, limit = 30 }) => {
+    async ({ unread_only = true, mark_read = true, limit = 10 }) => {
       const notes = await mutate((b) => {
         let got = b.notes.filter((n) => [AGENT, "all"].includes(n.to) && n.from !== AGENT);
         if (unread_only) got = got.filter((n) => !n.readAt);
@@ -862,7 +837,7 @@ export function buildServer() {
         "notes, status changes.",
       inputSchema: { limit: z.number().int().optional() },
     },
-    async ({ limit = 30 }) => {
+    async ({ limit = 12 }) => {
       const events = read().events.slice(-Math.max(1, limit)).map((e) => ({
         agent: e.agent, kind: e.kind, detail: e.detail, when: ago(e.ts),
       }));

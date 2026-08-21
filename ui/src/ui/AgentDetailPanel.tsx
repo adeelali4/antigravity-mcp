@@ -43,6 +43,13 @@ export function AgentDetailPanel({ agent, otherAgentName, onClose }: Props) {
         <dt>Task</dt>
         <dd>{agent.currentTask ?? <em className="detail-muted">no active task</em>}</dd>
 
+        {agent.model && (
+          <>
+            <dt>Model</dt>
+            <dd className="detail-model">{agent.model}</dd>
+          </>
+        )}
+
         <dt>Location</dt>
         <dd>{loc.label}</dd>
 
