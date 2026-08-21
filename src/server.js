@@ -113,6 +113,11 @@ async function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, 
     return { error: e.message };
   }
 
+  // Fast-path check before spawning, so an obvious conflict doesn't cost a
+  // spawn -- advisory only. The authoritative check-and-set happens inside
+  // mutate() below, under the board lock, closing the race where two
+  // *_delegate calls for an overlapping path both pass this check before
+  // either has recorded its lock (same pattern claim_paths already uses).
   const conflicts = read().locks
     .filter((l) => l.owner !== owner && claim.some((c) => overlaps(c, l.path)))
     .map((l) => ({ path: l.path, held_by: l.owner }));
@@ -125,8 +130,13 @@ async function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, 
     return { error: `failed to launch ${owner}: ${e.message}` };
   }
 
-  await mutate((b) => {
+  const raceLoss = await mutate((b) => {
     const now = Date.now();
+    const raceConflicts = b.locks
+      .filter((l) => l.owner !== owner && claim.some((c) => overlaps(c, l.path)))
+      .map((l) => ({ path: l.path, held_by: l.owner }));
+    if (raceConflicts.length) return raceConflicts;
+
     b.tasks.push({
       id, title, detail: prompt, owner, assignedBy: AGENT,
       status: "running", cwd, kind: "delegated", pid, created: now, updated: now,
@@ -137,7 +147,17 @@ async function delegateTask({ owner, toolPrefix, id, briefing, cwd, spawnExtra, 
     }
     b.presence[owner] = { status: "working", detail: title, ts: now };
     logEvent(b, AGENT, "task.delegated", `${id} ${title}`);
+    return null;
   });
+
+  if (raceLoss) {
+    // Someone else's *_delegate call won the same path between our check and
+    // now -- the child is already running, but it must not be left believing
+    // it owns paths another agent actually holds, so kill it and surface the
+    // conflict same as the pre-spawn check would have.
+    killTree(pid);
+    return { error: "path conflict; resolve before delegating", conflicts: raceLoss };
+  }
 
   return {
     task_id: id, status: "running", pid, cwd, claimed: claim,
