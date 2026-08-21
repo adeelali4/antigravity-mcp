@@ -54,6 +54,23 @@ const ok = (obj) => ({
 });
 
 /**
+ * Drop every lock tied to a finished task and log it, if any were held.
+ * Delegated agents are told to release_paths themselves when done, but that
+ * depends on them remembering to -- in practice they sometimes don't (a
+ * finished task can sit on a lock indefinitely otherwise). The board is the
+ * source of truth for "is this path free," so it releases its own stale
+ * locks the instant it learns a task is over, rather than trusting the
+ * delegate's cooperation.
+ */
+function releaseTaskLocks(b, taskId) {
+  const before = b.locks.length;
+  b.locks = b.locks.filter((l) => l.taskId !== taskId);
+  const released = before - b.locks.length;
+  if (released) logEvent(b, AGENT, "locks.auto-release", `${released} released for finished task ${taskId}`);
+  return released;
+}
+
+/**
  * Reconcile a delegated task with what its backend actually left on disk.
  * Called before any read of task state, which is what makes status survive a
  * server restart.
@@ -75,6 +92,7 @@ async function reap(id) {
       task.usage = payload.usage;
       task.durationSeconds = payload.duration_seconds;
       task.updated = Date.now();
+      releaseTaskLocks(b, id);
       logEvent(b, AGENT, `task.${task.status}`, `${id} ${task.title}`);
       return task;
     });
@@ -86,6 +104,7 @@ async function reap(id) {
       task.status = "failed";
       task.error = backend?.readStderr(id) || `${t.owner} exited without producing output`;
       task.updated = Date.now();
+      releaseTaskLocks(b, id);
       logEvent(b, AGENT, "task.failed", `${id} ${task.title}`);
       return task;
     });
@@ -213,7 +232,7 @@ async function cancelTask(task_id) {
     const task = b.tasks.find((x) => x.id === task_id);
     task.status = "cancelled";
     task.updated = Date.now();
-    b.locks = b.locks.filter((l) => l.taskId !== task_id);
+    releaseTaskLocks(b, task_id);
     logEvent(b, AGENT, "task.cancelled", task_id);
   });
   return { task_id, status: "cancelled", released_locks: true };
