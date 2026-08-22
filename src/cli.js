@@ -18,6 +18,19 @@ import { doctor, printDoctor } from "./doctor.js";
 import { reset, printReset } from "./reset.js";
 import { startUiServer, DEFAULT_UI_PORT } from "./uiServer.js";
 
+import {
+  printStatus,
+  printTasks,
+  delegateFromCli,
+  printLogs,
+  cancelFromCli,
+  unlockFromCli,
+  lockFromCli,
+  reassignFromCli,
+  sendNoteFromCli,
+  readNotesFromCli,
+} from "./commands.js";
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Read from package.json so this can never drift from what's actually installed. */
 const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8")).version;
@@ -31,17 +44,39 @@ const valueOf = (f) => {
 };
 
 const HELP = `
-  antigravity-mcp-server — delegate to the Antigravity CLI and coordinate with it
+  antigravity-mcp-server — delegate to AI coding agents and coordinate with them
 
-  Usage
+  Server & Management
     antigravity-mcp-server                 Run the MCP server on stdio (how clients launch it)
     antigravity-mcp-server ui              Open the office visualization (agents, tasks, board)
     antigravity-mcp-server init            Register the server into every MCP client found
-    antigravity-mcp-server update          Update globally-installed server to latest version
     antigravity-mcp-server doctor          Check that every link in the chain works
+    antigravity-mcp-server update          Update globally-installed server to latest version
     antigravity-mcp-server reset           Wipe the shared board to recover from stuck state
     antigravity-mcp-server version         Print the installed version (also: v, -v, --version)
     antigravity-mcp-server --help
+
+  Developer & AI CLI Control
+    antigravity-mcp-server status [--json] Show agents, tasks, locks, notes (--json for scripts)
+    antigravity-mcp-server tasks [--json]  List tasks on the board (--all for history, --owner <id>)
+    antigravity-mcp-server delegate <cli> <prompt>
+                                           Run a detached task (e.g. ag, copilot, claude)
+    antigravity-mcp-server logs <id> [-f]  Print output for a task (-f follow, --err, --prompt)
+    antigravity-mcp-server cancel <id>     Cancel a running task and release its path locks
+    antigravity-mcp-server reassign <id> <to>
+                                           Rerun a task's brief on another CLI without re-prompting
+    antigravity-mcp-server lock <paths...> Lock files/dirs before editing (--note <text>)
+    antigravity-mcp-server unlock [path]   Release path locks (--all to drop all locks)
+    antigravity-mcp-server note <to> <msg> Leave a message on the board for an agent
+    antigravity-mcp-server inbox [--unread] Read messages addressed to you or all
+
+  delegate options
+    --title <label>           Short label for the board
+    --cwd <path>              Project root directory (default: current directory)
+    --claim <p1,p2>           Comma-separated file/dir paths to lock
+    --model <name>            Model override for the backend
+    --effort <level>          Effort level (low, medium, high)
+    --timeout <seconds>       Task timeout
 
   init options
     --dry-run                 Show what would change, write nothing
@@ -79,6 +114,23 @@ function openInBrowser(url) {
   child.unref();
 }
 
+function positionalArgs(startIndex = 1) {
+  const flagsWithValue = new Set([
+    "--note", "--claim", "--cwd", "--title", "--owner",
+    "--model", "--effort", "--timeout", "--limit", "--only", "--port", "--path"
+  ]);
+  const out = [];
+  for (let i = startIndex; i < argv.length; i++) {
+    const item = argv[i];
+    if (item.startsWith("-")) {
+      if (flagsWithValue.has(item)) i++;
+    } else {
+      out.push(item);
+    }
+  }
+  return out;
+}
+
 async function main() {
   if (has("--help") || has("-h") || cmd === "help") {
     console.log(HELP);
@@ -90,6 +142,95 @@ async function main() {
   }
 
   switch (cmd) {
+    case "status":
+    case "ps": {
+      process.exitCode = printStatus({ json: has("--json") });
+      return;
+    }
+    case "tasks":
+    case "board": {
+      const owner = valueOf("--owner");
+      const limit = valueOf("--limit");
+      process.exitCode = printTasks({
+        all: has("--all"),
+        owner,
+        limit: limit ? Number(limit) : 25,
+        json: has("--json"),
+      });
+      return;
+    }
+    case "delegate": {
+      const [backend, ...restPrompt] = positionalArgs(1);
+      const prompt = restPrompt.join(" ") || valueOf("--prompt");
+      process.exitCode = await delegateFromCli({
+        backend,
+        prompt,
+        title: valueOf("--title"),
+        cwd: valueOf("--cwd") || process.cwd(),
+        claim: valueOf("--claim") ? valueOf("--claim").split(",") : [],
+        model: valueOf("--model"),
+        effort: valueOf("--effort"),
+        timeout: valueOf("--timeout"),
+      });
+      return;
+    }
+    case "logs":
+    case "tail": {
+      const [taskId] = positionalArgs(1);
+      process.exitCode = await printLogs(taskId, {
+        err: has("--err"),
+        prompt: has("--prompt"),
+        raw: has("--raw"),
+        follow: has("-f") || has("--follow"),
+      });
+      return;
+    }
+    case "reassign": {
+      const [taskId, toBackend] = positionalArgs(1);
+      const note = valueOf("--note");
+      process.exitCode = await reassignFromCli({ taskIdArg: taskId, toBackend, note });
+      return;
+    }
+    case "lock":
+    case "claim": {
+      const paths = positionalArgs(1);
+      const note = valueOf("--note") || "";
+      process.exitCode = await lockFromCli(paths, { note });
+      return;
+    }
+    case "cancel":
+    case "kill": {
+      const [taskId] = positionalArgs(1);
+      process.exitCode = await cancelFromCli(taskId);
+      return;
+    }
+    case "unlock":
+    case "release": {
+      const [unlockPath] = positionalArgs(1);
+      process.exitCode = await unlockFromCli({
+        path: unlockPath || valueOf("--path"),
+        all: has("--all"),
+        owner: valueOf("--owner"),
+      });
+      return;
+    }
+    case "note":
+    case "msg": {
+      const [to, ...bodyParts] = positionalArgs(1);
+      const body = bodyParts.join(" ") || valueOf("--body");
+      process.exitCode = await sendNoteFromCli(to, body);
+      return;
+    }
+    case "inbox":
+    case "notes": {
+      process.exitCode = readNotesFromCli({
+        unreadOnly: has("--unread"),
+        markRead: has("--mark-read"),
+        limit: valueOf("--limit") ? Number(valueOf("--limit")) : 20,
+        json: has("--json"),
+      });
+      return;
+    }
     case "init": {
       const only = valueOf("--only");
       printInit(

@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { CLIENTS, AGY_SETTINGS, serverKey } from "./clients.js";
 import { findAgy } from "./agy.js";
 import { loadBackends } from "./backends.js";
-import { stateDir, mutate, read } from "./store.js";
+import { stateDir, mutate } from "./store.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 

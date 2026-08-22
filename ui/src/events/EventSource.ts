@@ -23,31 +23,92 @@ export abstract class BaseEventSource implements AgentEventSource {
  * Not wired up anywhere -- included so the "replaceable without a rewrite"
  * requirement is demonstrably true, not just asserted.
  */
-export type WsStatus = "open" | "closed" | "error";
+export type WsStatus = "open" | "closed" | "error" | "reconnecting";
 
 export class WebSocketAgentEventSource extends BaseEventSource {
   private ws: WebSocket | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private shouldReconnect = false;
+  private retryDelay = 1000;
+
   constructor(private url: string, private onStatus?: (status: WsStatus) => void) {
     super();
   }
+
   start(): void {
-    this.ws = new WebSocket(this.url);
-    this.ws.onopen = () => this.onStatus?.("open");
-    this.ws.onclose = () => this.onStatus?.("closed");
-    this.ws.onerror = () => this.onStatus?.("error");
+    this.shouldReconnect = true;
+    this.connect();
+  }
+
+  private connect(): void {
+    if (!this.shouldReconnect) return;
+    this.cleanupSocket();
+
+    try {
+      this.ws = new WebSocket(this.url);
+    } catch {
+      this.onStatus?.("error");
+      this.scheduleReconnect();
+      return;
+    }
+
+    this.ws.onopen = () => {
+      this.retryDelay = 1000;
+      this.onStatus?.("open");
+    };
+
+    this.ws.onclose = () => {
+      this.onStatus?.("closed");
+      this.scheduleReconnect();
+    };
+
+    this.ws.onerror = () => {
+      this.onStatus?.("error");
+    };
+
     this.ws.onmessage = (msg) => {
       try {
-        this.emit(JSON.parse(msg.data) as AgentEvent);
+        const data = JSON.parse(msg.data);
+        if (data && typeof data === "object" && data.type) {
+          this.emit(data as AgentEvent);
+        }
       } catch {
-        /* malformed frame from the server: drop it, don't crash the UI */
+        /* malformed frame from the server: drop it safely */
       }
     };
   }
-  stop(): void {
+
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.reconnectTimer) return;
+    this.onStatus?.("reconnecting");
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.retryDelay = Math.min(this.retryDelay * 1.5, 8000);
+      this.connect();
+    }, this.retryDelay);
+  }
+
+  private cleanupSocket(): void {
     if (this.ws) {
-      this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
-      this.ws.close();
+      this.ws.onopen = null;
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      try {
+        this.ws.close();
+      } catch {
+        /* ignore close errors on dead sockets */
+      }
+      this.ws = null;
     }
-    this.ws = null;
+  }
+
+  stop(): void {
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.cleanupSocket();
   }
 }

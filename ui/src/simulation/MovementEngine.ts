@@ -158,6 +158,8 @@ export class MovementEngine {
     for (const [id, a] of this.anim) {
       if (a.phase === "gone") {
         this.anim.delete(id);
+        this.enterTimers.delete(id);
+        this.leaveTimers.delete(id);
         needsCleanup = true;
       }
     }

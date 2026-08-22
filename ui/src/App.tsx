@@ -21,7 +21,7 @@ const BRIDGE_URL =
     : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`);
 const LIVE_CONNECT_TIMEOUT_MS = 2500;
 
-type ConnectionMode = "connecting" | "live" | "demo";
+type ConnectionMode = "connecting" | "live" | "reconnecting" | "demo";
 
 export default function App() {
   const agents = useAgentStore((s) => s.agents);
@@ -31,32 +31,41 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState<ConnectionMode>("connecting");
 
-  // Try the real bridge first; if it doesn't open within the timeout (bridge
-  // not running, or nothing has ever talked to antigravity-mcp-server yet),
-  // fall back to the demo source so the simulation is never just blank.
+  // Try the real bridge first; if it doesn't open within the timeout,
+  // fall back to the demo source while keeping auto-reconnect alive in the background.
   useEffect(() => {
     let cancelled = false;
-    let decided = false;
-    let fallbackTimer: ReturnType<typeof setTimeout>;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
     let demo: MockAgentEventSource | null = null;
 
     const live = new WebSocketAgentEventSource(BRIDGE_URL, (status) => {
-      if (decided || cancelled) return;
+      if (cancelled) return;
       if (status === "open") {
-        decided = true;
-        clearTimeout(fallbackTimer);
+        if (fallbackTimer) {
+          clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
+        if (demo) {
+          demo.stop();
+          demo = null;
+        }
         reset();
         setMode("live");
-      } else {
-        goDemo();
+      } else if (status === "reconnecting") {
+        setMode((prev) => (prev === "demo" ? "demo" : "reconnecting"));
+      } else if (status === "closed" || status === "error") {
+        if (fallbackTimer === null && mode === "connecting") {
+          goDemo();
+        }
       }
     });
 
     function goDemo() {
-      if (decided || cancelled) return;
-      decided = true;
-      clearTimeout(fallbackTimer);
-      live.stop();
+      if (cancelled || demo) return;
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
       reset();
       demo = new MockAgentEventSource();
       demo.subscribe(handleEvent);
@@ -70,7 +79,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      clearTimeout(fallbackTimer);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
       live.stop();
       demo?.stop();
     };
@@ -112,10 +121,12 @@ export default function App() {
 }
 
 function ModeBadge({ mode }: { mode: ConnectionMode }) {
-  const label = mode === "live" ? "Live" : mode === "demo" ? "Demo" : "Connecting…";
+  const label = mode === "live" ? "Live" : mode === "demo" ? "Demo" : mode === "reconnecting" ? "Reconnecting…" : "Connecting…";
   const detail =
     mode === "live"
       ? "watching antigravity-mcp-server"
+      : mode === "reconnecting"
+      ? "re-establishing link to server…"
       : mode === "demo"
       ? "simulated data — no bridge detected"
       : "";

@@ -46,6 +46,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   connectionOrder: [],
 
   handleEvent(event) {
+    if (!event || typeof event !== "object" || !event.type || !event.agentId) return;
     const now = Date.now();
 
     set((state) => {

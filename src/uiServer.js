@@ -111,7 +111,10 @@ export function startUiServer({ port = DEFAULT_UI_PORT } = {}) {
 
   poll();
   const timer = setInterval(poll, POLL_MS);
-  server.on("close", () => clearInterval(timer));
+  server.on("close", () => {
+    clearInterval(timer);
+    wss.close();
+  });
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);

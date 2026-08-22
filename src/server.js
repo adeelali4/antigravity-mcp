@@ -24,7 +24,7 @@ import {
   mutate, read, ago, norm, overlaps, logEvent, nextId, taskId, ensureDirs,
 } from "./store.js";
 import { isAlive, killTree } from "./proc.js";
-import { loadBackends, spawnBackend, recoverTask, TASK_MARKER } from "./backends.js";
+import { loadBackends, spawnBackend, recoverTask } from "./backends.js";
 import { classifyFailure, localUsage, isExhausted, isExpired, untilReset } from "./limits.js";
 
 /**

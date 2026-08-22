@@ -105,6 +105,8 @@ export class MockAgentEventSource extends BaseEventSource {
   private after(ms: number, fn: () => void) {
     if (!this.running) return;
     const t = setTimeout(() => {
+      const idx = this.timers.indexOf(t);
+      if (idx !== -1) this.timers.splice(idx, 1);
       if (this.running) fn();
     }, ms);
     this.timers.push(t);

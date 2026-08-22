@@ -159,6 +159,22 @@ function prune(board) {
     const drop = new Set(read_.slice(0, read_.length - KEEP_READ_NOTES).map((n) => n.id));
     board.notes = board.notes.filter((n) => !drop.has(n.id));
   }
+  const now = Date.now();
+  if (board.limits) {
+    for (const [owner, entry] of Object.entries(board.limits)) {
+      if (entry?.resets_at && Date.parse(entry.resets_at) <= now) {
+        delete board.limits[owner];
+      }
+    }
+  }
+  const PRESENCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  if (board.presence) {
+    for (const [id, p] of Object.entries(board.presence)) {
+      if (p.ts && now - p.ts > PRESENCE_MAX_AGE_MS) {
+        delete board.presence[id];
+      }
+    }
+  }
 }
 
 function write(board) {
