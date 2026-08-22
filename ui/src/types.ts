@@ -12,7 +12,12 @@ export type ConnectionStatus = "connected" | "disconnected";
  */
 export const KNOWN_STATUSES = [
   "idle",
+  "finding",
+  "reading",
+  "bashing",
+  "searching",
   "developing",
+  "working",
   "testing",
   "reviewing",
   "debugging",

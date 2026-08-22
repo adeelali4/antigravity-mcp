@@ -17,6 +17,9 @@ export const PALETTE = {
   screenReview: "#2a1a3a",
   screenDebug: "#3a1414",
   screenBlocked: "#3a1414",
+  screenSearch: "#1a2540",
+  screenRead: "#0e3340",
+  screenBash: "#3a2a0d",
   textPrimary: "#e8ecff",
   textDim: "#8b91b8",
   textOffline: "#5a5f78",
@@ -27,6 +30,7 @@ export const PALETTE = {
   accentPurple: "#c084fc",
   accentRed: "#f87171",
   accentBlue: "#60a5fa",
+  accentCyan: "#22d3ee",
 } as const;
 
 export function hueColor(hue: number, s = 62, l = 56): string {
@@ -38,8 +42,16 @@ export function statusColor(status: string): string {
     case "idle":
       return PALETTE.textDim;
     case "developing":
-    case "working": // antigravity-mcp-server's presence_set vocabulary is coarser than the demo's -- treat its "working" as the same "actively doing something" signal as "developing"
+    case "working":
       return PALETTE.accentGreen;
+    case "finding":
+      return PALETTE.accentPurple;
+    case "reading":
+      return PALETTE.accentCyan;
+    case "bashing":
+      return PALETTE.accentAmber;
+    case "searching":
+      return PALETTE.accentBlue;
     case "testing":
       return PALETTE.accentAmber;
     case "reviewing":
@@ -60,6 +72,13 @@ export function screenColorFor(status: string): string {
     case "developing":
     case "working":
       return PALETTE.screenDev;
+    case "finding":
+    case "searching":
+      return PALETTE.screenSearch;
+    case "reading":
+      return PALETTE.screenRead;
+    case "bashing":
+      return PALETTE.screenBash;
     case "testing":
       return PALETTE.screenTest;
     case "reviewing":

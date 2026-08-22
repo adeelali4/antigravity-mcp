@@ -131,7 +131,7 @@ export function read() {
       // instead of reporting the problem. Refuse instead, and say where it is.
       throw new Error(
         `board at ${file} is not valid JSON (${e.message}). ` +
-          `Move or delete that file to start clean -- refusing to overwrite it.`
+          `Run \`antigravity-mcp-server reset --yes\` or move/delete that file to start clean -- refusing to overwrite it.`
       );
     }
   }

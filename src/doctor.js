@@ -62,7 +62,7 @@ export async function doctor({ probe = false } = {}) {
     await mutate((b) => b);
     add("shared board", PASS, stateDir());
   } catch (e) {
-    add("shared board", FAIL, `${stateDir()} — ${e.message}`);
+    add("shared board", FAIL, `${stateDir()} — ${e.message} — run: antigravity-mcp-server reset --yes`);
   }
 
   const uiDist = path.join(HERE, "..", "ui-dist", "index.html");
@@ -78,7 +78,7 @@ export async function doctor({ probe = false } = {}) {
     try {
       registered = Boolean(JSON.parse(fs.readFileSync(c.file, "utf8") || "{}")[c.key]?.[serverKey(c)]);
     } catch { /* unparseable config */ }
-    add(`client: ${c.label}`, registered ? PASS : WARN, registered ? "registered" : "config found, server not registered");
+    add(`client: ${c.label}`, registered ? PASS : WARN, registered ? "registered" : "config found, server not registered — run: antigravity-mcp-server init");
   }
 
   if (probe && agy) {

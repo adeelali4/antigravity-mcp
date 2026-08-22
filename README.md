@@ -79,6 +79,7 @@ You'll mostly only ever need the first two.
 | Command | What it does |
 |---|---|
 | `antigravity-mcp-server init` | Find your AI tools and wire them all up. Run again whenever you install a new one. |
+| `antigravity-mcp-server restart` | Restart coordination state, terminate hanging UI/workers, and refresh board & clients |
 | `antigravity-mcp-server ui` | Open the live office dashboard in your browser |
 | `antigravity-mcp-server doctor` | Check everything works, and show which AI CLIs are installed |
 | `antigravity-mcp-server update` | Update to the latest version (so you don't have to remember the npm command) |
@@ -242,7 +243,7 @@ Your agent picks these on its own using MCP.
 | **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` · `task_reassign` |
 | **File locks** | `claim_paths` · `release_paths` · `check_paths` |
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
-| **Admin** | `coop_reset` |
+| **Admin** | `coop_restart` · `coop_reset` |
 
 `<prefix>` is the backend: `ag`, `copilot`, `claude`, `codex`, `cursor`, `gemini`, `opencode`, or whatever you named your own. Every lane is symmetric — same shape, same behaviour — so your agent just picks whichever CLI you named, and none of them is a special case. Only lanes whose CLI is actually installed get registered.
 
@@ -410,6 +411,11 @@ antigravity-mcp-server update           # forgot the npm command? this finds you
 ```
 
 `update` figures out how you're running this and does the right thing: a real global install gets `npm install -g` to the latest version (with live output, so you can watch it happen); running via `npx` already re-fetches latest on every launch, so it just tells you there's nothing to do; running from a git checkout (like this one) tells you to `git pull` instead, since there's no package to update.
+
+After updating:
+- **Restart your MCP clients** so they pick up the new server version.
+- Run **`antigravity-mcp-server init`** if required, to refresh client configs or register newly supported backends and tools.
+- Run **`antigravity-mcp-server reset --yes`** if required, to clear stale locks or stuck tasks from previous versions.
 
 ### Settings
 

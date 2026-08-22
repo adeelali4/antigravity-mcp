@@ -55,6 +55,30 @@ const DEBUG_TASKS = [
   "Investigate a flaky reconnect",
   "Track down a memory leak in the render loop",
 ];
+const FIND_TASKS = [
+  "Finding source files for authentication",
+  "Locating component definitions",
+  "Scanning project structure",
+  "Finding layout config files",
+];
+const READ_TASKS = [
+  "Reading src/server.js",
+  "Reading documentation on MCP tools",
+  "Inspecting inbox messages",
+  "Reviewing package configurations",
+];
+const BASH_TASKS = [
+  "Running npm test",
+  "Executing build script",
+  "Running git status and diff",
+  "Running diagnostic checks",
+];
+const SEARCH_TASKS = [
+  "Searching codebase for error handlers",
+  "Searching for path lock references",
+  "Grep searching across src/ directory",
+  "Searching API contracts",
+];
 const BLOCKED_TASKS = [
   "Waiting on API contract from teammate",
   "Blocked on missing credentials",
@@ -166,17 +190,21 @@ export class MockAgentEventSource extends BaseEventSource {
       if (!this.running || !this.connected.has(id)) return;
 
       const action = weightedPick<
-        "develop" | "test" | "review" | "debug" | "idle" | "blocked" | "lounge" | "meeting" | "visit"
+        "develop" | "finding" | "reading" | "bashing" | "searching" | "test" | "review" | "debug" | "idle" | "blocked" | "lounge" | "meeting" | "visit"
       >([
-        ["develop", 24],
-        ["test", 14],
-        ["review", 10],
-        ["debug", 10],
-        ["idle", 14],
-        ["blocked", 6],
-        ["lounge", 8],
-        ["meeting", 8],
-        ["visit", 10],
+        ["develop", 18],
+        ["finding", 10],
+        ["reading", 10],
+        ["bashing", 12],
+        ["searching", 10],
+        ["test", 10],
+        ["review", 8],
+        ["debug", 8],
+        ["idle", 10],
+        ["blocked", 4],
+        ["lounge", 6],
+        ["meeting", 6],
+        ["visit", 8],
       ]);
 
       const home = this.homeDesk.get(id)!;
@@ -186,6 +214,26 @@ export class MockAgentEventSource extends BaseEventSource {
           this.goHome(id, home);
           this.setStatus(id, "developing", pick(DEV_TASKS));
           this.after(jitter(4000, 5000), step);
+          return;
+        case "finding":
+          this.goHome(id, home);
+          this.setStatus(id, "finding", pick(FIND_TASKS));
+          this.after(jitter(3000, 3000), step);
+          return;
+        case "reading":
+          this.goHome(id, home);
+          this.setStatus(id, "reading", pick(READ_TASKS));
+          this.after(jitter(3000, 3000), step);
+          return;
+        case "bashing":
+          this.goHome(id, home);
+          this.setStatus(id, "bashing", pick(BASH_TASKS));
+          this.after(jitter(3500, 3500), step);
+          return;
+        case "searching":
+          this.goHome(id, home);
+          this.setStatus(id, "searching", pick(SEARCH_TASKS));
+          this.after(jitter(3000, 3000), step);
           return;
         case "test":
           this.goHome(id, home);

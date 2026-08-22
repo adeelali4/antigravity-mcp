@@ -82,8 +82,28 @@ export function drawDeskScreen(ctx: CanvasRenderingContext2D, loc: Location, sta
   const t = timeMs / 260;
   if (status === "developing" || status === "working") {
     for (let i = 0; i < 3; i++) {
-      const w = 6 + ((Math.sin(t + i) + 1) * 7) | 0;
+      const w = 6 + (((Math.sin(t + i) + 1) * 7) | 0);
       px(ctx, sx + 2, sy + 3 + i * 4, w, 2, PALETTE.accentGreen);
+    }
+  } else if (status === "bashing") {
+    // Terminal prompt with blinking cursor: >_
+    px(ctx, sx + 3, sy + 4, 3, 2, PALETTE.accentAmber);
+    px(ctx, sx + 4, sy + 6, 2, 2, PALETTE.accentAmber);
+    const blink = Math.sin(timeMs / 140) > 0;
+    if (blink) {
+      px(ctx, sx + 8, sy + 9, 5, 2, PALETTE.accentAmber);
+    }
+  } else if (status === "finding" || status === "searching") {
+    // Radar / scanning search sweep
+    const scanX = sx + 2 + Math.floor((timeMs / 100) % (sw - 5));
+    px(ctx, scanX, sy + 3, 3, sh - 6, status === "finding" ? PALETTE.accentPurple : PALETTE.accentBlue);
+    px(ctx, sx + 2, sy + sh - 4, sw - 4, 1, PALETTE.wallTrim);
+  } else if (status === "reading") {
+    // Document reading lines
+    const lineOffset = Math.floor((timeMs / 250) % 3);
+    for (let i = 0; i < 3; i++) {
+      const activeLine = (i + lineOffset) % 3 === 0;
+      px(ctx, sx + 3, sy + 3 + i * 4, sw - 6, 2, activeLine ? PALETTE.accentCyan : PALETTE.textDim);
     }
   } else if (status === "testing") {
     const w = (Math.sin(t) + 1) * 0.5 * (sw - 4);
@@ -177,9 +197,18 @@ export function drawCharacter(ctx: CanvasRenderingContext2D, x: number, y: numbe
   const torsoH = seated ? 14 : 16;
   px(ctx, x - 9, baseY - legH - torsoH + 2, 18, torsoH, shirt);
 
-  // Arms (a little motion while developing/testing, to read as "active").
-  const armJitter =
-    s.status === "developing" || s.status === "working" || s.status === "testing" ? Math.sin(timeMs / 90) * 2 : 0;
+  // Arms (active motion while working/bashing/finding/reading/searching/developing).
+  const isActive =
+    s.status === "developing" ||
+    s.status === "working" ||
+    s.status === "bashing" ||
+    s.status === "finding" ||
+    s.status === "reading" ||
+    s.status === "searching" ||
+    s.status === "testing" ||
+    s.status === "debugging" ||
+    s.status === "reviewing";
+  const armJitter = isActive ? Math.sin(timeMs / 90) * 2 : 0;
   px(ctx, x - 12, baseY - legH - torsoH + 6 + armJitter, 4, 8, shirt);
   px(ctx, x + 8, baseY - legH - torsoH + 6 - armJitter, 4, 8, shirt);
 
@@ -224,6 +253,18 @@ function drawStatusBadge(ctx: CanvasRenderingContext2D, x: number, y: number, st
     case "developing":
     case "working":
       label(ctx, "</>", x, y, color, 10);
+      return;
+    case "bashing":
+      label(ctx, ">_", x, y, color, 11);
+      return;
+    case "finding":
+      label(ctx, "⌕", x, y, color, 12);
+      return;
+    case "searching":
+      label(ctx, "🔍", x, y, color, 10);
+      return;
+    case "reading":
+      label(ctx, "≡", x, y, color, 12);
       return;
     case "testing":
       label(ctx, "✓", x, y, color, 12);

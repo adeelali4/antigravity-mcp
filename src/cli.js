@@ -16,6 +16,7 @@ import { init, printInit } from "./init.js";
 import { update, printUpdate } from "./update.js";
 import { doctor, printDoctor } from "./doctor.js";
 import { reset, printReset } from "./reset.js";
+import { restart, printRestart } from "./restart.js";
 import { startUiServer, DEFAULT_UI_PORT } from "./uiServer.js";
 
 import {
@@ -49,6 +50,7 @@ const HELP = `
   Server & Management
     antigravity-mcp-server                 Run the MCP server on stdio (how clients launch it)
     antigravity-mcp-server ui              Open the office visualization (agents, tasks, board)
+    antigravity-mcp-server restart         Restart coordination state, kill stale UI/workers, clean board
     antigravity-mcp-server init            Register the server into every MCP client found
     antigravity-mcp-server doctor          Check that every link in the chain works
     antigravity-mcp-server update          Update globally-installed server to latest version
@@ -90,6 +92,13 @@ const HELP = `
 
   reset options
     --yes, -y       Actually perform the wipe (without this, acts as a dry-run)
+
+  restart options
+    --ui            Also start/restart the office UI dashboard
+    --yes, -y       Also wipe all tasks, locks, and history (full board reset)
+    --init          Also re-register the server into all detected MCP clients
+    --port <n>      Port to serve on for UI (default ${DEFAULT_UI_PORT})
+    --open          Open UI in default browser
 
   ui options
     --port <n>      Port to serve on (default ${DEFAULT_UI_PORT})
@@ -253,6 +262,20 @@ async function main() {
     }
     case "reset": {
       process.exitCode = printReset(await reset({ yes: has("--yes") || has("-y") })) ? 1 : 0;
+      return;
+    }
+    case "restart": {
+      const portArg = valueOf("--port");
+      const port = portArg ? Number(portArg) : DEFAULT_UI_PORT;
+      process.exitCode = printRestart(
+        await restart({
+          yes: has("--yes") || has("-y"),
+          ui: has("--ui"),
+          init: has("--init"),
+          port,
+          open: has("--open"),
+        })
+      ) ? 1 : 0;
       return;
     }
     case "ui": {

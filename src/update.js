@@ -3,7 +3,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
-import { findGlobalBin, PKG_NAME } from "./init.js";
+import { findGlobalBin, PKG_NAME, BIN_NAME } from "./init.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -66,9 +66,11 @@ export function update() {
 export function printUpdate(res) {
   console.log("");
   if (res.state === "npx") {
-    console.log(`  - ${res.detail}\n`);
+    console.log(`  - ${res.detail}`);
+    console.log(`\n  Tip: Run \`npx ${PKG_NAME} init\` to refresh client configs or \`npx ${PKG_NAME} reset --yes\` to clear the board if needed.\n`);
   } else if (res.state === "local") {
-    console.log(`  - ${res.detail}\n`);
+    console.log(`  - ${res.detail}`);
+    console.log(`\n  Tip: After pulling updates, run \`${BIN_NAME} init\` to refresh client configs and \`${BIN_NAME} reset --yes\` if the board needs clearing.\n`);
   } else if (res.state === "error") {
     console.error(`  x Update failed: ${res.detail}\n`);
     return true;
@@ -82,7 +84,10 @@ export function printUpdate(res) {
     } else {
       console.log(`  + Update completed successfully.`);
     }
-    console.log("\n  Restart your MCP clients to pick up the new version.\n");
+    console.log("\n  Next steps:");
+    console.log(`  1. Run \`${BIN_NAME} restart\` (or restart your MCP clients) to refresh servers and state.`);
+    console.log(`  2. Run \`${BIN_NAME} init\` if required (to refresh client configs or register newly supported tools).`);
+    console.log(`  3. Run \`${BIN_NAME} reset --yes\` if required (to wipe the board if recovering from stuck tasks or stale state).\n`);
   }
   return false;
 }

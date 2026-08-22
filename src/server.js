@@ -994,6 +994,17 @@ export async function buildServer() {
       },
     },
     async ({ owner, include_done = false, limit = 20 }) => {
+      await mutate((b) => {
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = {
+          ...existing,
+          status: "reading",
+          detail: "Checking task board",
+          pid: process.pid,
+          cwd: process.cwd(),
+          ts: Date.now(),
+        };
+      });
       let items = read().tasks;
       if (owner) items = items.filter((t) => t.owner === owner);
       if (!include_done) items = items.filter((t) => !["done", "cancelled", "failed"].includes(t.status));
@@ -1034,6 +1045,15 @@ export async function buildServer() {
             granted.push(p);
           }
         }
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = {
+          ...existing,
+          status: "developing",
+          detail: granted.length ? `Locked ${granted.map((f) => path.basename(f)).join(", ")}` : existing?.detail || "",
+          pid: process.pid,
+          cwd: process.cwd(),
+          ts: Date.now(),
+        };
         logEvent(b, AGENT, "locks.claim", `${granted.length} granted, ${conflicts.length} conflicts`);
         return { granted, conflicts };
       });
@@ -1078,6 +1098,18 @@ export async function buildServer() {
       inputSchema: { paths: z.array(z.string()) },
     },
     async ({ paths }) => {
+      await mutate((b) => {
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = {
+          ...existing,
+          status: "finding",
+          detail: `Checking ${paths.map((p) => path.basename(p)).join(", ")}`,
+          pid: process.pid,
+          cwd: process.cwd(),
+          ts: Date.now(),
+        };
+        logEvent(b, AGENT, "paths.check", paths.map((p) => path.basename(p)).join(", "));
+      });
       const locks = read().locks;
       return ok({
         you_are: AGENT,
@@ -1112,6 +1144,15 @@ export async function buildServer() {
       const id = await mutate((b) => {
         const nid = nextId(b);
         b.notes.push({ id: nid, from: AGENT, to, body, created: Date.now(), readAt: null });
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = {
+          ...existing,
+          status: "working",
+          detail: `Sent note to ${to}`,
+          pid: process.pid,
+          cwd: process.cwd(),
+          ts: Date.now(),
+        };
         logEvent(b, AGENT, "note.sent", `-> ${to}: ${body.slice(0, 80)}`);
         return nid;
       });
@@ -1136,6 +1177,16 @@ export async function buildServer() {
         if (unread_only) got = got.filter((n) => !n.readAt);
         got = got.slice(-Math.max(1, limit));
         if (mark_read) for (const n of got) n.readAt = Date.now();
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = {
+          ...existing,
+          status: "reading",
+          detail: "Reading inbox notes",
+          pid: process.pid,
+          cwd: process.cwd(),
+          ts: Date.now(),
+        };
+        logEvent(b, AGENT, "note.read", `${got.length} note(s)`);
         return got.map((n) => ({ id: n.id, from: n.from, body: n.body, when: ago(n.created) }));
       });
       return ok({ count: notes.length, notes });
@@ -1152,7 +1203,7 @@ export async function buildServer() {
         "start (e.g. \"claude-sonnet-5\") if you know it -- otherwise this identity shows no " +
         "model while idle, since model is normally only known for an active delegated task.",
       inputSchema: {
-        status: z.enum(["idle", "working", "blocked", "offline"]),
+        status: z.string().describe("Agent status: finding, reading, bashing, searching, working, developing, testing, reviewing, debugging, blocked, offline, idle, etc."),
         detail: z.string().optional(),
         model: z.string().optional(),
       },
@@ -1180,6 +1231,17 @@ export async function buildServer() {
       inputSchema: { limit: z.number().int().optional() },
     },
     async ({ limit = 12 }) => {
+      await mutate((b) => {
+        const existing = b.presence[AGENT];
+        b.presence[AGENT] = {
+          ...existing,
+          status: "reading",
+          detail: "Reading activity timeline",
+          pid: process.pid,
+          cwd: process.cwd(),
+          ts: Date.now(),
+        };
+      });
       const events = read().events.slice(-Math.max(1, limit)).map((e) => ({
         agent: e.agent, kind: e.kind, detail: e.detail, when: ago(e.ts),
       }));
@@ -1203,6 +1265,39 @@ export async function buildServer() {
         logEvent(b, AGENT, "board.reset", "cleared");
       });
       return ok({ reset: true });
+    }
+  );
+
+  server.registerTool(
+    "coop_restart",
+    {
+      title: "Restart coordination state",
+      description:
+        "Cleanly restart coordination state: resets presence, releases all held locks, " +
+        "cancels in-flight tasks, and signals connected clients to refresh.",
+      inputSchema: {
+        reset_board: z.boolean().optional().describe("Pass true to wipe the board completely"),
+      },
+    },
+    async ({ reset_board = false }) => {
+      await mutate((b) => {
+        if (reset_board) {
+          b.tasks = []; b.locks = []; b.notes = []; b.events = []; b.presence = {}; b.limits = {}; b.seq = 0;
+          logEvent(b, AGENT, "board.restart", "full wipe via coop_restart");
+        } else {
+          b.presence = {};
+          const releasedCount = (b.locks || []).length;
+          b.locks = [];
+          for (const t of b.tasks || []) {
+            if (t.status === "running" || t.status === "queued") {
+              t.status = "cancelled";
+              t.updated = Date.now();
+            }
+          }
+          logEvent(b, AGENT, "board.restart", `presence reset, ${releasedCount} locks released`);
+        }
+      });
+      return ok({ restarted: true, reset_board, hint: "Coordination state refreshed. Restart active AI sessions to reconnect." });
     }
   );
 

@@ -6,9 +6,13 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { printUpdate } from "../src/update.js";
+import { restart, printRestart } from "../src/restart.js";
+import { computeAgents, inferLiveActivity, getAntigravityActivity } from "../src/ui/bridgeState.js";
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 const SANDBOX = path.join(os.tmpdir(), "antigravity-mcp-test");
+process.env.ANTIGRAVITY_MCP_HOME = SANDBOX;
 fs.rmSync(SANDBOX, { recursive: true, force: true });
 
 let failures = 0;
@@ -141,6 +145,84 @@ check("other agent keeps its lock", (await call(bob, "check_paths", { paths: ["~
 check("unknown task handled", (await call(alice, "ag_task_status", { task_id: "nope" })).error !== undefined);
 check("reset is guarded", (await call(alice, "coop_reset", {})).error !== undefined);
 check("reset works with confirm", (await call(alice, "coop_reset", { confirm: true })).reset === true);
+
+const restartToolRes = await call(alice, "coop_restart", {});
+check("coop_restart works", restartToolRes.restarted === true);
+
+const restartToolWipe = await call(alice, "coop_restart", { reset_board: true });
+check("coop_restart with reset_board works", restartToolWipe.restarted === true && restartToolWipe.reset_board === true);
+
+// rich presence statuses: finding, reading, bashing, searching
+const pFinding = await call(alice, "presence_set", { status: "finding", detail: "finding project files" });
+check("presence_set accepts finding status", pFinding.status === "finding");
+
+const pBashing = await call(alice, "presence_set", { status: "bashing", detail: "running npm test" });
+check("presence_set accepts bashing status", pBashing.status === "bashing");
+
+const pReading = await call(alice, "presence_set", { status: "reading", detail: "reading README.md" });
+check("presence_set accepts reading status", pReading.status === "reading");
+
+const pSearching = await call(alice, "presence_set", { status: "searching", detail: "searching for auth" });
+check("presence_set accepts searching status", pSearching.status === "searching");
+
+// inferLiveActivity check
+const mockRunDir = path.join(SANDBOX, "runs");
+fs.mkdirSync(mockRunDir, { recursive: true });
+fs.writeFileSync(path.join(mockRunDir, "testtask.json"), JSON.stringify({ name: "run_command", CommandLine: "npm test" }));
+const inferred = inferLiveActivity({ id: "testtask" });
+check("inferLiveActivity detects bashing", inferred?.status === "bashing");
+
+fs.writeFileSync(path.join(mockRunDir, "testtask2.json"), JSON.stringify({ name: "find_by_name", Pattern: "*.ts" }));
+const inferredFind = inferLiveActivity({ id: "testtask2" });
+check("inferLiveActivity detects finding", inferredFind?.status === "finding");
+
+fs.writeFileSync(path.join(mockRunDir, "testtask3.json"), JSON.stringify({ name: "grep_search", Query: "foobar" }));
+const inferredSearch = inferLiveActivity({ id: "testtask3" });
+check("inferLiveActivity detects searching", inferredSearch?.status === "searching");
+
+fs.writeFileSync(path.join(mockRunDir, "testtask4.json"), JSON.stringify({ name: "view_file", AbsolutePath: "/a/b/index.ts" }));
+const inferredRead = inferLiveActivity({ id: "testtask4" });
+check("inferLiveActivity detects reading", inferredRead?.status === "reading");
+
+// computeAgents check
+const agents = computeAgents({
+  presence: {
+    claude: { status: "searching", detail: "searching for auth", ts: Date.now(), pid: process.pid, cwd: process.cwd() },
+  },
+  tasks: [],
+  locks: [],
+  notes: [],
+});
+const claudeAgent = agents.find((a) => a.id === "claude");
+check("computeAgents reflects searching status", claudeAgent?.status === "searching");
+
+// getAntigravityActivity check (detects live Antigravity transcripts)
+const act = getAntigravityActivity();
+check("getAntigravityActivity detects active host transcript", act !== null && ["bashing", "finding", "reading", "searching", "developing", "working"].includes(act.status));
+
+// restart command checks
+const restartRes = await restart({});
+check("restart() returns success", restartRes.state === "success");
+
+const restartResWipe = await restart({ yes: true });
+check("restart({ yes: true }) returns wiped board", restartResWipe.boardSummary?.action === "wiped");
+
+const origLog2 = console.log;
+let restartOutput = "";
+console.log = (...args) => { restartOutput += args.join(" ") + "\n"; };
+printRestart(restartRes);
+console.log = origLog2;
+check("printRestart outputs summary", restartOutput.includes("restart completed"));
+
+// printUpdate output prompt checks
+const origLog = console.log;
+let captured = "";
+console.log = (...args) => { captured += args.join(" ") + "\n"; };
+printUpdate({ state: "success", versionBefore: "0.6.0", versionAfter: "0.6.1" });
+console.log = origLog;
+check("update prompts for init", captured.includes("init"));
+check("update prompts for reset", captured.includes("reset --yes"));
+check("update prompts for restart", captured.includes("restart"));
 
 await alice.close();
 await bob.close();
