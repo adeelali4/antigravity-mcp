@@ -1,0 +1,63 @@
+# antigravity-mcp-server
+
+> MCP server that lets multiple AI coding agents (Antigravity agy, GitHub Copilot CLI, Claude Code, Cursor, Codex, Gemini, OpenCode) collaborate simultaneously on a single codebase with shared task boards, path locking / file mutexes to prevent overwrites, and a live retro-office visualization dashboard.
+
+## Quickstart
+
+```bash
+npm install -g antigravity-mcp-server
+antigravity-mcp-server init
+```
+
+The `init` command automatically detects installed AI tools (Claude Code, Cursor, Windsurf, Gemini CLI, Claude Desktop, VS Code) and registers the MCP server configuration.
+
+## Core Features
+
+- **Multi-Agent Delegation**: Delegate subtasks from any AI coding assistant to background CLI workers (`agy`, `copilot`, `claude`, `codex`, `cursor-agent`, `gemini`, `opencode`).
+- **File Locking / Conflict Prevention**: `claim_paths` ensures agents never overwrite each other's work or cause merge collisions.
+- **Shared Board & Presence**: Live synchronized task board (`coop_status`, `board_post`, `board_update`) tracking active tasks, online agents, and handoffs.
+- **Inter-Agent Notes**: Asynchronous message passing between agents (`notes_send`, `notes_read`).
+- **Live Retro-Office UI**: Visual pixel-art office dashboard (`antigravity-mcp-server ui`) running at `http://localhost:49321`.
+
+## MCP Client Configuration
+
+### Standard MCP Configuration (Claude Desktop, Cursor, Windsurf, VS Code)
+```json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "npx",
+      "args": ["-y", "antigravity-mcp-server"]
+    }
+  }
+}
+```
+
+### Smithery 1-Click Install
+```bash
+npx -y @smithery/cli install antigravity-mcp-server --client claude
+```
+
+## Available MCP Tools
+
+- `<backend>_delegate`: Launch a delegated background task on an installed CLI backend (`ag_delegate`, `copilot_delegate`, `claude_delegate`, etc.).
+- `<backend>_task_status`: Check status and progress of a delegated task.
+- `<backend>_task_wait`: Wait for a delegated background task to complete.
+- `<backend>_followup`: Send follow-up instructions to an existing delegated agent session.
+- `<backend>_cancel`: Terminate a running delegated task.
+- `claim_paths`: Claim exclusive locks on files or directories to prevent race conditions.
+- `release_paths`: Release claimed locks once work is complete.
+- `check_paths`: Check if specific file paths are currently claimed by another agent.
+- `coop_status`: Retrieve the current status of the shared task board, file locks, and agent presence.
+- `board_post`: Post a new task to the shared board.
+- `board_update`: Update status or details of a posted task.
+- `notes_send`: Send a message to another agent or broadcast to all agents.
+- `notes_read`: Read unread or historical notes from other agents.
+- `presence_set`: Update agent presence and status (e.g. idle, working, blocked).
+- `activity`: Log agent activity events to the visual dashboard.
+
+## Links
+
+- **npm**: https://www.npmjs.com/package/antigravity-mcp-server
+- **GitHub**: https://github.com/adeelali4/antigravity-mcp
+- **Issues**: https://github.com/adeelali4/antigravity-mcp/issues

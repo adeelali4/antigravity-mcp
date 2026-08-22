@@ -1,0 +1,9 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+  command: npx
+  args:
+    - -y
+    - antigravity-mcp-server

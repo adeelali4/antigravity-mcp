@@ -11,6 +11,7 @@ Keep working yourself. Nobody breaks anyone else's files.
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/protocol-MCP-blue.svg)](https://modelcontextprotocol.io)
+[![Smithery](https://smithery.ai/badge/antigravity-mcp-server)](https://smithery.ai/server/antigravity-mcp-server)
 [![Backends](https://img.shields.io/badge/backends-7%20built--in%20%2B%20your%20own-8957e5.svg)](#adding-your-own-cli)
 
 </div>
@@ -205,6 +206,21 @@ A delegated agent saying it finished doesn't make it true — every agent here i
 <p align="center"><img src="docs/images/verify-before-trust.jpg" alt="An agent verifying a delegated task's actual diff before trusting its 'done' report" width="720"></p>
 
 That habit is exactly what catches a delegate that reports success without having really made the change — which happens.
+
+---
+
+## Comparison: Why coordination matters
+
+| Capability | Single Agent (Vanilla) | Multiple Uncoordinated Agents | `antigravity-mcp-server` |
+|---|---|---|---|
+| **Parallel multi-agent coding** | ❌ Serial only | ⚠️ Risky (race conditions) | ✅ **Full parallel delegation across CLIs** |
+| **File collision prevention** | N/A | ❌ Silent file overwrites & broken builds | ✅ **Exclusive path locks (`claim_paths`)** |
+| **Shared task board** | ❌ None | ❌ None | ✅ **Live synchronized state (`board.json`)** |
+| **Inter-agent communication** | ❌ None | ❌ Manual copy-pasting by developer | ✅ **Native async notes & structured handoffs** |
+| **Cross-ecosystem support** | ❌ Single IDE/CLI | ❌ Siloed tools | ✅ **Claude Code, Cursor, Windsurf, Copilot, Antigravity** |
+| **Live visual office UI** | ❌ Logs/terminal only | ❌ Logs/terminal only | ✅ **Bundled retro pixel-art dashboard (`ui`)** |
+| **Token & cost optimization** | Baseline | High redundant token consumption | ✅ **27–90% payload compression & cached state** |
+| **Rate-limit failover** | ❌ Task aborts | ❌ Manual re-prompting | ✅ **Zero-token brief replay across backends** |
 
 ---
 
@@ -430,8 +446,50 @@ After updating:
 
 ### Setting it up by hand
 
-With a global install (`npm install -g antigravity-mcp-server`), add this to your tool's MCP config:
+While `antigravity-mcp-server init` configures your installed tools automatically, you can also configure any client manually:
 
+#### ⚡ Smithery 1-Click Install (Claude Desktop, Cursor, etc.)
+```bash
+npx -y @smithery/cli install antigravity-mcp-server --client claude
+```
+
+#### 🤖 Claude Desktop (`claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "npx",
+      "args": ["-y", "antigravity-mcp-server", "--agent", "claude-desktop"]
+    }
+  }
+}
+```
+
+#### 💻 Cursor IDE (`~/.cursor/mcp.json` or `.cursor/mcp.json`)
+```json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "npx",
+      "args": ["-y", "antigravity-mcp-server", "--agent", "cursor"]
+    }
+  }
+}
+```
+
+#### 🏄 Windsurf (`~/.codeium/windsurf/mcp_config.json`)
+```json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "npx",
+      "args": ["-y", "antigravity-mcp-server", "--agent", "windsurf"]
+    }
+  }
+}
+```
+
+#### 📟 Claude Code CLI (`~/.claude.json`)
 ```json
 {
   "mcpServers": {
@@ -443,26 +501,38 @@ With a global install (`npm install -g antigravity-mcp-server`), add this to you
 }
 ```
 
-Without a global install, use `npx` instead:
-
+#### 🌌 Google Antigravity CLI (`~/.gemini/config/mcp_config.json`)
+Name the server `coop`, use `--agent antigravity`:
 ```json
 {
   "mcpServers": {
-    "antigravity": {
-      "command": "npx",
-      "args": ["-y", "antigravity-mcp-server", "--agent", "claude-code"]
+    "coop": {
+      "command": "antigravity-mcp-server",
+      "args": ["--agent", "antigravity"]
     }
   }
 }
 ```
-
-On the Antigravity side, name the server `coop`, use `--agent antigravity`, and add this to `~/.gemini/antigravity-cli/settings.json`:
-
+And add permission approval in `~/.gemini/antigravity-cli/settings.json`:
 ```json
-{ "permissions": { "allow": ["mcp(coop/*)"] } }
+{
+  "permissions": {
+    "allow": ["mcp(coop/*)"]
+  }
+}
 ```
 
-The server key must match the allow-rule — `coop` here, `mcp(coop/*)` there.
+#### 📝 VS Code (`settings.json` or `%APPDATA%/Code/User/mcp.json`)
+```json
+{
+  "servers": {
+    "antigravity": {
+      "command": "npx",
+      "args": ["-y", "antigravity-mcp-server", "--agent", "vscode"]
+    }
+  }
+}
+```
 
 ### Working on the code
 
