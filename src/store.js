@@ -99,23 +99,41 @@ function release() {
 }
 
 export function read() {
-  let raw;
-  try {
-    raw = fs.readFileSync(boardPath(), "utf8");
-  } catch {
-    return structuredClone(EMPTY); // no board yet: an empty one is the right answer
-  }
-  try {
-    return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
-  } catch (e) {
-    // A board that exists but won't parse is NOT the same as no board. Falling
-    // back to empty here would hand mutate() a blank board to write straight
-    // over the real one -- silently destroying every task, lock and note
-    // instead of reporting the problem. Refuse instead, and say where it is.
-    throw new Error(
-      `board at ${boardPath()} is not valid JSON (${e.message}). ` +
-        `Move or delete that file to start clean -- refusing to overwrite it.`
-    );
+  const file = boardPath();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let raw;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch (err) {
+      if (err.code === "ENOENT") return structuredClone(EMPTY);
+      // Windows NTFS may momentarily return EBUSY/EPERM/EACCES during atomic rename
+      if (attempt < 2 && (err.code === "EBUSY" || err.code === "EPERM" || err.code === "EACCES")) {
+        try {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+        } catch {}
+        continue;
+      }
+      return structuredClone(EMPTY);
+    }
+    try {
+      return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
+    } catch (e) {
+      // If read occurred mid-flush/rename and yielded empty string or partial JSON, retry before throwing
+      if (attempt < 2 && (!raw.trim() || e instanceof SyntaxError)) {
+        try {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+        } catch {}
+        continue;
+      }
+      // A board that exists but won't parse is NOT the same as no board. Falling
+      // back to empty here would hand mutate() a blank board to write straight
+      // over the real one -- silently destroying every task, lock and note
+      // instead of reporting the problem. Refuse instead, and say where it is.
+      throw new Error(
+        `board at ${file} is not valid JSON (${e.message}). ` +
+          `Move or delete that file to start clean -- refusing to overwrite it.`
+      );
+    }
   }
 }
 
@@ -212,6 +230,9 @@ export function ago(ts) {
 export function norm(p) {
   let out = p.startsWith("~") ? path.join(HOME, p.slice(1)) : p;
   out = path.resolve(out);
+  if (out.length > 1 && (out.endsWith("/") || out.endsWith("\\"))) {
+    out = out.slice(0, -1);
+  }
   return process.platform === "win32" ? out.toLowerCase() : out;
 }
 

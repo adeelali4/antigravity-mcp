@@ -56,7 +56,7 @@ export function readResult(id) {
   // line means exactly that, and a substring scan settles it far cheaper. A
   // false positive (the text appearing inside a message) just falls through
   // to the real parse below, which still returns null correctly.
-  if (!raw.includes('"type":"result"')) return null;
+  if (!/"type"\s*:\s*"result"/.test(raw)) return null;
 
   let resultEvent = null;
   let lastMessage = "";

@@ -74,7 +74,9 @@ function openInBrowser(url) {
   const platform = process.platform;
   const cmd = platform === "win32" ? "start" : platform === "darwin" ? "open" : "xdg-open";
   const args = platform === "win32" ? ["", url] : [url];
-  spawn(cmd, args, { shell: platform === "win32", stdio: "ignore", detached: true }).unref();
+  const child = spawn(cmd, args, { shell: platform === "win32", stdio: "ignore", detached: true });
+  child.on("error", () => {});
+  child.unref();
 }
 
 async function main() {

@@ -37,7 +37,8 @@ export async function doctor({ probe = false } = {}) {
 
   const agy = findAgy({ required: false });
   if (agy) {
-    const v = spawnSync(agy, ["--version"], { encoding: "utf8", timeout: 20000 });
+    const isWinBatch = process.platform === "win32" && /\.(cmd|bat)$/i.test(agy);
+    const v = spawnSync(agy, ["--version"], { encoding: "utf8", timeout: 20000, shell: isWinBatch });
     const line = ((v.stdout || "") + (v.stderr || "")).split(/\r?\n/).find((l) => l.trim());
     add("agy runs", v.error ? FAIL : PASS, v.error ? v.error.message : (line || "responded").trim());
   }
@@ -81,11 +82,12 @@ export async function doctor({ probe = false } = {}) {
   }
 
   if (probe && agy) {
+    const isWinBatch = process.platform === "win32" && /\.(cmd|bat)$/i.test(agy);
     const r = spawnSync(
       agy,
       ["--print", "Call the coop_status MCP tool and reply with SUCCESS or FAILED only.",
        "--output-format", "json", "--print-timeout", "120s"],
-      { encoding: "utf8", timeout: 150000 }
+      { encoding: "utf8", timeout: 150000, shell: isWinBatch }
     );
     const raw = r.stdout || "";
     const i = raw.indexOf("{");

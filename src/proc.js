@@ -18,8 +18,15 @@ export function isAlive(pid) {
 export function killTree(pid) {
   if (!pid) return;
   try {
-    if (WIN) spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
-    else process.kill(-pid, "SIGTERM");
+    if (WIN) {
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+    } else {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        process.kill(pid, "SIGTERM");
+      }
+    }
   } catch {
     /* already dead */
   }

@@ -138,7 +138,7 @@ const BUILTIN = [
     id: "cursor", label: "Cursor", owner: "cursor-agent", verified: false,
     bin: {
       envVar: "CURSOR_AGENT_BIN", name: "cursor-agent",
-      candidates: [path.join(HOME, ".local", "bin", exe("cursor-agent")), "/usr/local/bin/cursor-agent"],
+      candidates: [path.join(HOME, ".local", "bin", exe("cursor-agent")), "/usr/local/bin/cursor-agent", "/opt/homebrew/bin/cursor-agent"],
     },
     build: ({ prompt, model, autoApprove, resume }) => {
       const args = ["-p", prompt, "--output-format", "json"];
@@ -156,7 +156,7 @@ const BUILTIN = [
     id: "gemini", label: "Gemini", owner: "gemini-agent", verified: false, resume: false,
     bin: {
       envVar: "GEMINI_BIN", name: "gemini",
-      candidates: [path.join(HOME, ".local", "bin", exe("gemini")), "/usr/local/bin/gemini"],
+      candidates: [path.join(HOME, ".local", "bin", exe("gemini")), "/usr/local/bin/gemini", "/opt/homebrew/bin/gemini"],
     },
     build: ({ prompt, cwd, model, addDirs, autoApprove }) => {
       const args = ["-p", prompt, "-o", "json"];
@@ -173,7 +173,7 @@ const BUILTIN = [
     id: "opencode", label: "OpenCode", owner: "opencode-agent", verified: false,
     bin: {
       envVar: "OPENCODE_BIN", name: "opencode",
-      candidates: [path.join(HOME, ".local", "bin", exe("opencode")), "/usr/local/bin/opencode"],
+      candidates: [path.join(HOME, ".local", "bin", exe("opencode")), "/usr/local/bin/opencode", "/opt/homebrew/bin/opencode"],
     },
     modelHint: "provider/model, e.g. anthropic/claude-sonnet-5",
     build: ({ prompt, cwd, model, autoApprove, resume }) => {
@@ -352,11 +352,13 @@ export function spawnBackend(spec, id, prompt, opts = {}) {
   fs.writeFileSync(promptPath(id), prompt);
   const out = fs.openSync(outPath(id), "w");
   const err = fs.openSync(errPath(id), "w");
-  const child = spawn(spec.findBin(), args, {
+  const bin = spec.findBin();
+  const child = spawn(bin, args, {
     cwd: opts.cwd,
     detached: true,
     windowsHide: true,
     stdio: ["ignore", out, err],
+    shell: WIN && /\.(cmd|bat)$/i.test(bin),
   });
   // Detached and unref'd, so nothing else observes this child -- without a
   // listener a post-spawn failure emits an unhandled 'error' that kills this

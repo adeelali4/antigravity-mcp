@@ -21,7 +21,10 @@ export const BIN_NAME = Object.keys(PKG.bin || {})[0] || PKG_NAME;
  * real global install -- it is this very invocation's throwaway copy.
  */
 function isNpxCache(resolved) {
-  return /[\\/](_npx|npm-cache)[\\/]/.test(resolved) || /[\\/]Temp[\\/]/i.test(resolved);
+  return (
+    /[\\/](_npx|npm-cache)[\\/]/.test(resolved) ||
+    /[\\/](tmp|Temp|var[\\/]folders)[\\/]/i.test(resolved)
+  );
 }
 
 export function findGlobalBin() {
