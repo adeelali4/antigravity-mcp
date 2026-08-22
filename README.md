@@ -114,6 +114,12 @@ You can delegate anything—not just UI work. Let another agent handle docs, ref
 The shared board automatically prevents collisions. If you change a core file, you can easily tell the other agent what changed so it adapts.
 > *"We're changing the user schema. Leave a note for the other agent telling it that `id` is now a string."*
 
+**Tell an agent to sit one out.**
+Running low on Claude usage and want to protect what's left? Just say so — the agent reports itself `blocked`, hands off whatever it was doing to whoever's free, and the board makes that visible to everyone instead of it just going quiet.
+> *"Don't use Claude for the rest of this task — I'm close to my limit. Hand off what's left to Antigravity."*
+
+<p align="center"><img src="docs/images/office-blocked-status.jpg" alt="An agent marked blocked, having handed off its remaining work" width="720"></p>
+
 ---
 
 ## Watch it happen — the office UI
@@ -125,6 +131,16 @@ antigravity-mcp-server ui
 ```
 
 This opens a retro pixel-art office at `http://localhost:49321`. You get a little digital floorplan with one desk per agent identity. You can literally watch them work: their live status, their current task, and who's bossing who around, all driven by the live board.
+
+<p align="center"><img src="docs/images/office-overview.jpg" alt="The Agent Office dashboard, showing six live agent desks" width="720"></p>
+
+The sidebar shows a live one-line summary of what everyone's actually doing, right down to their real task:
+
+<p align="center"><img src="docs/images/office-with-copilot.jpg" alt="The sidebar showing live one-line task summaries for every connected agent" width="720"></p>
+
+Run two windows of the same tool at once? They just show up as their own desks — `Claude Code`, `Claude Code 2`, `Claude Code 3` — instead of quietly fighting over one identity. Click any desk for the full picture: status, task, model, PID, and which directory it's actually working in.
+
+<p align="center"><img src="docs/images/office-detail.jpg" alt="Clicking an agent desk shows its status, task, model, PID, and working directory" width="720"></p>
 
 ---
 
@@ -150,6 +166,13 @@ Each agent checks what the other is doing before it starts, so it always picks w
 
 ### 4. Agents look out for each other
 A finished task releases its own locks automatically — nobody has to remember to clean up after themselves. And if one ever slips through anyway, the next agent to check in sees it immediately: locks tied to work that's already over are called out by name, so it gets fixed instead of silently getting in the way.
+
+### 5. "Done" is a claim, not a fact
+A delegated agent saying it finished doesn't make it true — every agent here is expected to actually check, not just take the other's word for it:
+
+<p align="center"><img src="docs/images/verify-before-trust.jpg" alt="An agent verifying a delegated task's actual diff before trusting its 'done' report" width="720"></p>
+
+That habit is exactly what catches a delegate that reports success without having really made the change — which happens.
 
 ---
 

@@ -36,8 +36,10 @@ export function AgentDetailPanel({ agent, otherAgentName, onClose }: Props) {
       <dl className="detail-fields">
         <dt>Status</dt>
         <dd>
-          <span className="detail-status-dot" style={{ background: statusColor(agent.status) }} />
-          {agent.status}
+          <span className="detail-status-row">
+            <span className="detail-status-dot" style={{ background: statusColor(agent.status) }} />
+            {agent.status}
+          </span>
         </dd>
 
         <dt>Task</dt>

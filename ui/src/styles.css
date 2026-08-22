@@ -287,6 +287,15 @@ body {
 }
 .detail-fields dd {
   margin: 2px 0 0;
+  /* Plain block, not flex: a flex item's text won't wrap the way normal
+     block text does, so a long Task description or Directory path pushed
+     the panel's content past its fixed width instead of wrapping inside
+     it. break-word covers a single long unbroken token (a path with no
+     spaces) that's still wider than the panel on its own. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.detail-status-row {
   display: flex;
   align-items: center;
   gap: 6px;
