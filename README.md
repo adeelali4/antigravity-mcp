@@ -4,12 +4,14 @@
 
 **Let multiple AI agents build your app at the same time — without stepping on each other.**
 
-Hand work to Antigravity, GitHub Copilot, or another Claude, keep working yourself, and none of you break each other's files.
+Hand work to Antigravity, Copilot, Codex, Cursor, another Claude — or any CLI you already use.
+Keep working yourself. Nobody breaks anyone else's files.
 
 [![npm](https://img.shields.io/npm/v/antigravity-mcp-server.svg)](https://www.npmjs.com/package/antigravity-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/protocol-MCP-blue.svg)](https://modelcontextprotocol.io)
+[![Backends](https://img.shields.io/badge/backends-7%20built--in%20%2B%20your%20own-8957e5.svg)](#adding-your-own-cli)
 
 </div>
 
@@ -23,41 +25,65 @@ They can't see each other. That's the whole issue.
 
 ## The fix
 
-One small server every agent plugs into. It acts as their shared brain, tracking who is doing what and which files are claimed. It gives your primary agent the ability to spin up Antigravity, Copilot, or another Claude instance to do its chores in the background, all while you keep coding together in your main window.
+One small server every agent plugs into. It acts as their shared brain, tracking who is doing what and which files are claimed. It gives whichever agent you're talking to the ability to spin up any other AI CLI you have — Antigravity, Copilot, Codex, Cursor, another Claude — to do its chores in the background, while you two keep working in your main window.
 
 ```
-   Your AI agent                            Antigravity        Copilot
-   Claude Code · Cursor · Windsurf           (agy CLI)        (copilot CLI)
-   VS Code · Gemini CLI · OpenCode
-          │                                       │                │
-          │  MCP                              MCP │            MCP │
-          └──────────────┐         ┌──────────────┘   ┌────────────┘
-                         ▼         ▼                  ▼
-              ┌─────────────────────────────────┐
-              │     antigravity-mcp-server      │
-              │                                 │
-              │ board.json                      │
-              │  ├─ tasks ..... who does what   │
-              │  ├─ locks ..... files taken     │
-              │  ├─ notes ..... messages        │
-              │  └─ presence .. who is online   │
-              └─────────────────────────────────┘
-                              │
-                              └──► starts agy / copilot in the background
+        YOU talk to whichever agent you already use
+                          │
+   ┌──────────────────────┴───────────────────────┐
+   │  Claude Code · Cursor · Windsurf · VS Code   │
+   │  Gemini CLI · OpenCode · Antigravity · …     │
+   └──────────────────────┬───────────────────────┘
+                          │  MCP
+                          ▼
+        ┌─────────────────────────────────────┐
+        │       antigravity-mcp-server        │
+        │                                     │
+        │  board.json ── the shared brain     │
+        │   ├─ tasks ..... who does what      │
+        │   ├─ locks ..... files taken        │
+        │   ├─ notes ..... messages           │
+        │   └─ presence .. who is online      │
+        └─────────────────┬───────────────────┘
+                          │  runs in the background
+   ┌──────────────────────┴───────────────────────┐
+   ▼          ▼          ▼          ▼             ▼
+  agy      copilot     claude     codex      your own CLI
 ```
+
+Any of them can hand work to any other. Nothing here is Claude-only, or Antigravity-only.
 
 ---
 
-## Install in seconds
+## Getting started
 
-It takes just two commands to get going:
+**Step 1 — have an AI coding tool already installed.** Claude Code, the Antigravity CLI, the GitHub Copilot CLI, Cursor, Windsurf, Gemini CLI, Claude Desktop, VS Code, or OpenCode — any one of these is enough to start. If you can already open it in a terminal (or as an app) and chat with it normally, you're set for this step. This package doesn't replace that tool or install one for you — it plugs into whichever one(s) you already have.
+
+**Step 2 — install this package and run `init`:**
 
 ```bash
 npm install -g antigravity-mcp-server
 antigravity-mcp-server init
 ```
 
-`init` does the heavy lifting for you: it finds every AI tool on your computer and automatically wires them up to the shared board. Just restart your AI tools, and you're ready to go!
+`init` looks at your machine, finds every tool from step 1 that's actually installed, and registers this server into each one automatically — nothing to configure by hand.
+
+**Step 3 — start a new session.** Close and reopen whichever tool(s) you use (a new terminal window, a fresh chat, whatever "restart" means for that tool). A session that was already open won't see the new server until it restarts.
+
+**Step 4 — just talk to it normally.** That's the whole setup. Open your tool, and say something like *"Have Antigravity build the checkout page while you work on payments."* Your agent takes it from there — more on that just below.
+
+### Every command, in one place
+
+You'll mostly only ever need the first two.
+
+| Command | What it does |
+|---|---|
+| `antigravity-mcp-server init` | Find your AI tools and wire them all up. Run again whenever you install a new one. |
+| `antigravity-mcp-server ui` | Open the live office dashboard in your browser |
+| `antigravity-mcp-server doctor` | Check everything works, and show which AI CLIs are installed |
+| `antigravity-mcp-server update` | Update to the latest version (so you don't have to remember the npm command) |
+| `antigravity-mcp-server reset --yes` | Something stuck? Wipe the shared board clean and start fresh |
+| `antigravity-mcp-server version` | Which version am I on? (also `v`, `-v`, `--version`) |
 
 ---
 
@@ -65,11 +91,13 @@ antigravity-mcp-server init
 
 **A host.** This is whichever AI coding tool you actually type into day to day — Claude Code, Cursor, Windsurf, Gemini CLI, Claude Desktop, VS Code with Copilot, OpenCode, or even the Antigravity or Copilot CLIs themselves. You need at least one of these already installed; that's what `init` is looking for when it says it "finds every AI tool on your computer." No host, nothing to plug into.
 
-**Delegation backends.** This is who your host can actually hand work *off* to: Antigravity's `agy`, the GitHub `copilot` CLI, or another Claude Code CLI. You do **not** need all three — any combination works, including just one:
+**Delegation backends.** This is who your host can actually hand work *off* to. Presets ship for `agy` (Antigravity), `copilot`, `claude`, `codex`, `cursor-agent`, `gemini` and `opencode` — and **any CLI you have can be added yourself**, see [Adding your own CLI](#adding-your-own-cli). You do **not** need all of them; any combination works, including just one:
 
-- Only Copilot CLI and Antigravity installed, no separate Claude CLI? Fine — `ag_delegate` and `copilot_delegate` both work. `claude_delegate` just isn't available until you add another Claude Code CLI.
-- Only a second Claude Code CLI and Antigravity, no Copilot? Same idea — you get `ag_delegate` and `claude_delegate`, minus the Copilot one.
+- Only Copilot CLI and Antigravity installed? Fine — `ag_delegate` and `copilot_delegate` both work.
+- Only a second Claude Code CLI and Antigravity? Same idea — you get `ag_delegate` and `claude_delegate`.
 - None installed yet? You still get the shared board — presence, locks, notes — your agent just can't delegate anywhere until you add a backend.
+
+Tools are only registered for CLIs actually installed on your machine, so your agent is never offered a `codex_delegate` that can't run. `antigravity-mcp-server doctor` lists the whole roster and tells you which are present.
 
 **When to run `init`:** right after you install this package, and again any time your setup changes — a new host editor, or a new delegation backend CLI you didn't have before. It's safe to run as often as you like: it only touches tools it actually finds on your machine, and it backs up anything it edits first.
 
@@ -167,12 +195,36 @@ Each agent checks what the other is doing before it starts, so it always picks w
 ### 4. Agents look out for each other
 A finished task releases its own locks automatically — nobody has to remember to clean up after themselves. And if one ever slips through anyway, the next agent to check in sees it immediately: locks tied to work that's already over are called out by name, so it gets fixed instead of silently getting in the way.
 
-### 5. "Done" is a claim, not a fact
+### 5. Nobody wastes your tokens
+Every message between agents costs you money, so the boring stuff is stripped out before it's ever sent. Repeated status checks return "nothing changed" instead of the whole board. A finished agent's 4,000-word answer comes back as a preview until someone asks for the rest. If one agent runs out of budget mid-task, the work moves to another one **without rewriting the instructions** — they're replayed from disk instead of re-typed by an AI. See [Built for speed](#built-for-speed).
+
+### 6. "Done" is a claim, not a fact
 A delegated agent saying it finished doesn't make it true — every agent here is expected to actually check, not just take the other's word for it:
 
 <p align="center"><img src="docs/images/verify-before-trust.jpg" alt="An agent verifying a delegated task's actual diff before trusting its 'done' report" width="720"></p>
 
 That habit is exactly what catches a delegate that reports success without having really made the change — which happens.
+
+---
+
+## Built for speed
+
+AI agents pay for every word they read. This server sits in the middle of a lot of conversations, so it's built to say as little as possible while still saying everything that matters. Real measurements, on a real board:
+
+| What was slow or expensive | What changed | Result |
+|---|---|---|
+| Agents re-read the shared board constantly | Stopped storing each task's full instructions there — they already live on disk, and nothing ever read them back | **113 KB → 50 KB**, and it no longer grows forever |
+| Every reply was pretty-printed for humans nobody was | Send it compact — an AI doesn't need the indentation | **~27% smaller** on every single reply |
+| "Is it done yet?" returned the entire board each time | Ask with a version number; get `unchanged` back if nothing moved | Near-zero for a repeat check |
+| A finished agent returned its full multi-page answer | Head-and-tail preview by default, full text on request | Big answers stop flooding the conversation |
+| Cost reports came back as a wall of nested numbers | Summarised to what you'd actually read | **~90% smaller** |
+| Moving a task to another AI meant re-writing the brief | Replay the original from disk | A 4,000-token brief moves for **free** |
+| Tools offered for CLIs you don't even have installed | Only register what's actually on your machine | Fewer tools, less context, no dead ends |
+
+Two more that aren't about tokens but about not losing your work:
+
+- **A crashed agent can't wedge the system.** File locks now free themselves the moment a task ends, and the shared board can't be corrupted by two agents writing at once — a real bug that was silently losing writes on Windows under load, now stress-tested with six processes hammering it at once.
+- **Nothing blocks.** Waiting on another agent never freezes the server; a long job survives your editor restarting.
 
 ---
 
@@ -186,19 +238,22 @@ Your agent picks these on its own using MCP.
 
 | Group | Tools |
 |---|---|
-| **Hand off to Antigravity** | `ag_delegate` · `ag_task_status` · `ag_task_wait` · `ag_followup` · `ag_cancel` |
-| **Hand off to Copilot** | `copilot_delegate` · `copilot_task_status` · `copilot_task_wait` · `copilot_followup` · `copilot_cancel` |
-| **Hand off to another Claude** | `claude_delegate` · `claude_task_status` · `claude_task_wait` · `claude_followup` · `claude_cancel` |
-| **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` |
+| **Hand off to any backend** | `<prefix>_delegate` · `<prefix>_task_status` · `<prefix>_task_wait` · `<prefix>_followup` · `<prefix>_cancel` |
+| **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` · `task_reassign` |
 | **File locks** | `claim_paths` · `release_paths` · `check_paths` |
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
 | **Admin** | `coop_reset` |
 
-The three delegation lanes are symmetric — same shape, same behavior — so your agent picks whichever CLI you named. `claude_delegate` launches a fully independent `claude` CLI process, not a subagent inside the calling session — and because it's a plain `claude` invocation, it automatically inherits whatever MCP servers are registered at user scope, this one included, so a delegated Claude can call `coop_status` / `claim_paths` on itself with no extra setup.
+`<prefix>` is the backend: `ag`, `copilot`, `claude`, `codex`, `cursor`, `gemini`, `opencode`, or whatever you named your own. Every lane is symmetric — same shape, same behaviour — so your agent just picks whichever CLI you named, and none of them is a special case. Only lanes whose CLI is actually installed get registered.
 
-Two worth knowing about:
-- **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread. It also reaps every running task's real status first, and any lock still standing for a task that's already over is flagged `orphaned` with the reason why -- a finished task releases its own locks automatically, so a flag here means something slipped through (an old lock claimed without a task_id, say), not routine cleanup. Every response carries a `seq`; pass it back as `since_seq` on your next call and, if nothing changed, you get `{unchanged: true}` instead of the full payload. Empty sections (no locks, no unread notes, nothing active) are omitted from the response entirely rather than sent as empty arrays.
-- **`ag_followup` / `copilot_followup` / `claude_followup`** — carries on the *same* conversation.
+`claude_delegate` launches a fully independent `claude` CLI process, not a subagent inside the calling session — and because it's a plain `claude` invocation, it automatically inherits whatever MCP servers are registered at user scope, this one included, so a delegated Claude can call `coop_status` / `claim_paths` on itself with no extra setup. The same is true of any backend that speaks MCP, which is what lets agy delegate to Claude, Claude delegate to Copilot, and so on in any direction.
+
+When a backend hits its usage limit, the failure is recognised as a *limit* rather than a bug, that backend is refused further work until it resets (and shown `blocked` in the office UI), and `coop_status` lists it under `unavailable_backends` with a reset time. To move work that was already in flight, `task_reassign(task_id, to)` replays the original brief from disk onto another backend — same directory, same reserved paths, and **the brief never passes through the model again**, so moving a 4,000-token delegation costs nothing to re-send.
+
+Worth knowing:
+- **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread. It also reaps every running task's real status first, and any lock still standing for a task that's already over is flagged `orphaned` with the reason why -- a finished task releases its own locks automatically, so a flag here means something slipped through (an old lock claimed without a task_id, say), not routine cleanup. Every response carries a `seq`; pass it back as `since_seq` on your next call and, if nothing changed, you get `{unchanged: true}` instead of the full payload. Empty sections (no locks, no unread notes, nothing active) are omitted from the response entirely rather than sent as empty arrays. Anything `board_post`'d to you that's still sitting at `open` shows up here every time, with a nudge in the hint, until you actually move it off `open` -- an assignment can't just get lost.
+- **`board_post`** — assigning something to another agent also sends them a note automatically, so it doesn't depend on them happening to check `board_list`.
+- **`<prefix>_followup`** — carries on the *same* conversation, so you don't re-explain context.
 - **`*_task_status` / `*_task_wait`** — a long response comes back as a head/tail preview by default, not the whole thing; pass `output_mode: "full"` when you actually need every character. `include_usage_detail: true` gets you the backend's raw token/cost breakdown instead of the `{input_tokens, output_tokens, total_tokens}` summary returned by default.
 
 ### How it works inside
@@ -220,6 +275,10 @@ There's no SQLite. A native build would break `npx` on machines without a compil
 
 #### Delegation
 
+Every brief gets the same short working agreement prepended before your task text: do what was asked and stop (report anything else you spot rather than fixing it), edit the files you were given without stopping to ask, verify with a real build/test before claiming done, hand off cleanly if you run out of room, and make the final message a handoff rather than a transcript. It's five lines because each one is a failure this board has actually seen — a delegate gold-plating a one-file fix, or reporting work it never did.
+
+Each backend is a spec in `src/backends.js` saying where its binary lives, how to build its argv, and how to read its answer — so `<prefix>_delegate`, `_followup`, `_task_status`, `_task_wait` and `_cancel` are generated per backend rather than hand-written five times. A backend whose CLI can't resume a session by id (gemini, currently) simply gets no `_followup` tool rather than a flag invented for it.
+
 `ag_delegate` shells out to:
 ```bash
 agy --print <brief> --output-format json --print-timeout <n>s \
@@ -236,9 +295,31 @@ copilot -p <brief> --output-format json --add-dir <cwd> --allow-all-tools
 claude <brief> --print --output-format json --add-dir <cwd> --dangerously-skip-permissions
 ```
 
-All three children are spawned **detached**, with output redirected straight to `runs/<task_id>.json`. That means a long job survives the MCP server being restarted — status is recovered by reading the run file and checking the PID, not by holding a child handle. agy and claude each emit one JSON object; copilot emits JSONL (one event per line, terminated by a `type: "result"` line) — all three get normalised to the same `{status, response, conversation_id, usage}` shape before landing on the board, so the rest of the server doesn't care which backend produced them.
+Every backend is spawned **detached**, with output redirected straight to `runs/<task_id>.json`. That means a long job survives the MCP server being restarted — status is recovered by reading the run file and checking the PID, not by holding a child handle. Output shapes differ (agy and claude each emit one JSON object; copilot streams JSONL terminated by a `type: "result"` line), so each spec says how to read its own, and all of them are normalised to the same `{status, response, conversation_id, usage}` before landing on the board. The rest of the server never learns which backend produced them.
 
 `ag_followup` reuses agy's `conversation_id` via `--conversation`; `copilot_followup` reuses Copilot's session id via `--resume`; `claude_followup` does the same via `claude`'s own `--resume`. Context carries across calls. Note: copilot and claude have no session-level timeout flag (`agy`'s `--print-timeout` has no equivalent on either) — a hung job just stays "running" until it exits on its own or the matching `*_cancel` kills it.
+
+#### Adding your own CLI
+
+The built-in presets are just presets. Whatever coding CLI you use, if it can take a prompt non-interactively and print an answer, you can delegate to it — drop a `backends.json` in `~/.antigravity-mcp/` (or wherever `ANTIGRAVITY_MCP_HOME` points):
+
+```json
+{
+  "backends": [
+    {
+      "id": "mycli",
+      "label": "My CLI",
+      "bin": "mycli",
+      "args": ["run", "{prompt}", "--json"],
+      "flags": { "model": "--model", "cwd": "--dir", "resume": "--session", "addDir": "--add" },
+      "autoApprove": ["--yolo"],
+      "output": { "format": "json", "response": "result", "session": "id" }
+    }
+  ]
+}
+```
+
+Restart your agent and you have `mycli_delegate`, `mycli_followup`, `mycli_task_status`, `mycli_task_wait` and `mycli_cancel`, plus a `mycli-agent` desk in the office UI. `{prompt}` and `{cwd}` are substituted; `flags` are only added when that option is actually used, and `output.format` is `json`, `jsonl` or `text` (`response`/`session` are dot-paths into the CLI's output). Use the same `id` as a built-in to override it — handy if a preset's flags are wrong for your version, since you don't have to wait for a release to fix it.
 
 #### Path locks
 Paths are normalised with `path.resolve` and case-folded on Windows, so `C:\Proj` and `c:\proj` can't defeat the same lock. Overlap is checked in both directions — claiming `api/routes.ts` conflicts with a held `api/`, and claiming `api/` conflicts with a held `api/routes.ts`.
@@ -312,15 +393,15 @@ A global install is worth the extra step over `npx`: your editor spawns this ser
 
 ### Good to know
 
-**Long jobs are safe.** Both backends run detached. If your editor or the server restarts, the job keeps going.
+**Long jobs are safe.** Every backend runs detached. If your editor or the server restarts, the job keeps going.
 
 **Delegated agents edit without asking.** `ag_delegate` passes `--dangerously-skip-permissions`; `copilot_delegate` passes `--allow-all-tools` (the documented minimum Copilot needs to write files in non-interactive mode). Pass `auto_approve: false` on either to make it stop at prompts instead.
 
 **One trap `init` handles for you, for agy.** In headless mode `agy` auto-denies every MCP call unless allow-listed in `~/.gemini/antigravity-cli/settings.json`. If that rule is missing, delegation still runs but coordination silently does nothing — the worst kind of failure, because it looks like it works. `init` adds `mcp(coop/*)`; `doctor` checks for it. Copilot has no equivalent trap: it was verified working with a plain `copilot mcp add --transport http` and no extra permission rule.
 
-**Both work in their own scratch project** unless the target directory is in their workspace. Every hand-off passes `--add-dir <cwd>` and states the project root in the brief.
+**Some CLIs default to their own scratch project** unless the target directory is in their workspace. Every hand-off passes the project root explicitly, both as a flag and in the brief.
 
-**You need:** Node 18.17 or newer, and at least one delegation target (`agy`, `copilot`, or `claude`). You get the shared board either way — a missing CLI just means you can't hand work to that one.
+**You need:** Node 18.17 or newer, and at least one delegation target. You get the shared board either way — a missing CLI just means you can't hand work to that one.
 
 ```bash
 antigravity-mcp-server doctor           # is everything working?
@@ -334,11 +415,12 @@ antigravity-mcp-server update           # forgot the npm command? this finds you
 
 | | |
 |---|---|
-| `AGY_BIN` | Path to the `agy` binary |
-| `COPILOT_BIN` | Path to the `copilot` binary |
-| `CLAUDE_BIN` | Path to the `claude` binary |
-| `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) |
+| `AGY_BIN` · `COPILOT_BIN` · `CLAUDE_BIN` | Path to that binary, if it isn't on your PATH |
+| `CODEX_BIN` · `CURSOR_AGENT_BIN` · `GEMINI_BIN` · `OPENCODE_BIN` | Same, for the other presets |
+| `<ID>_BIN` | Same again, for any backend you add yourself |
+| `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) — set it per project for full isolation |
 | `--agent <id>` | The name this instance uses on the board |
+| `~/.antigravity-mcp/backends.json` | Add your own CLI, or override a built-in preset |
 
 ### Setting it up by hand
 

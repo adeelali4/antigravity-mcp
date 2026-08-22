@@ -35,7 +35,7 @@ function lockPath() {
   return path.join(stateDir(), "board.lock");
 }
 
-const EMPTY = { tasks: [], locks: [], notes: [], events: [], presence: {}, seq: 0 };
+const EMPTY = { tasks: [], locks: [], notes: [], events: [], presence: {}, limits: {}, seq: 0 };
 
 export function ensureDirs() {
   fs.mkdirSync(runsDir(), { recursive: true });
@@ -99,18 +99,57 @@ function release() {
 }
 
 export function read() {
+  let raw;
   try {
-    const raw = fs.readFileSync(boardPath(), "utf8");
-    return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
+    raw = fs.readFileSync(boardPath(), "utf8");
   } catch {
-    return structuredClone(EMPTY);
+    return structuredClone(EMPTY); // no board yet: an empty one is the right answer
+  }
+  try {
+    return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
+  } catch (e) {
+    // A board that exists but won't parse is NOT the same as no board. Falling
+    // back to empty here would hand mutate() a blank board to write straight
+    // over the real one -- silently destroying every task, lock and note
+    // instead of reporting the problem. Refuse instead, and say where it is.
+    throw new Error(
+      `board at ${boardPath()} is not valid JSON (${e.message}). ` +
+        `Move or delete that file to start clean -- refusing to overwrite it.`
+    );
+  }
+}
+
+/**
+ * Board growth is otherwise unbounded, and every read parses the whole file --
+ * on every tool call, and once per poll while a *_task_wait blocks. Tasks and
+ * notes that are finished and read are history nothing queries again, so they
+ * get the same treatment `events` already had. Anything still live (open or
+ * running tasks, unread notes) is never dropped, regardless of count.
+ */
+const KEEP_FINISHED_TASKS = 40;
+const KEEP_READ_NOTES = 50;
+const TERMINAL = ["done", "failed", "cancelled"];
+
+function prune(board) {
+  const finished = board.tasks.filter((t) => TERMINAL.includes(t.status));
+  if (finished.length > KEEP_FINISHED_TASKS) {
+    const drop = new Set(finished.slice(0, finished.length - KEEP_FINISHED_TASKS).map((t) => t.id));
+    board.tasks = board.tasks.filter((t) => !drop.has(t.id));
+  }
+  const read_ = board.notes.filter((n) => n.readAt);
+  if (read_.length > KEEP_READ_NOTES) {
+    const drop = new Set(read_.slice(0, read_.length - KEEP_READ_NOTES).map((n) => n.id));
+    board.notes = board.notes.filter((n) => !drop.has(n.id));
   }
 }
 
 function write(board) {
   ensureDirs();
+  prune(board);
   const tmp = `${boardPath()}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(board, null, 2));
+  // Compact: nothing reads this file by eye, and the indentation is pure
+  // bytes on every write and pure parse cost on every read.
+  fs.writeFileSync(tmp, JSON.stringify(board));
   fs.renameSync(tmp, boardPath());
 }
 
@@ -123,6 +162,25 @@ export async function mutate(fn) {
     const out = await fn(board);
     write(board);
     return out;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Replace the board with a fresh empty one, still under the lock but WITHOUT
+ * reading the old one first. Everything else deliberately refuses to touch an
+ * unparseable board; this is the one operation that has to work anyway, since
+ * "wipe it and start over" is the answer to a board in that state.
+ */
+export async function resetBoard(stamp) {
+  ensureDirs();
+  await acquire();
+  try {
+    const board = structuredClone(EMPTY);
+    if (stamp) stamp(board);
+    write(board);
+    return board;
   } finally {
     release();
   }

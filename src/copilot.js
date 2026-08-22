@@ -2,8 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { HOME, runsDir, ensureDirs } from "./store.js";
+import { HOME, runsDir } from "./store.js";
 import { WIN, findBinary } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
@@ -36,49 +35,6 @@ export const errPath = (id) => path.join(runsDir(), `${id}.err`);
 export const promptPath = (id) => path.join(runsDir(), `${id}.prompt.txt`);
 
 /**
- * Launch copilot detached, streaming its JSONL event stream straight to disk.
- * Detaching means a long job survives this MCP server being restarted; status
- * is recovered later by reading the run file rather than by holding a child
- * handle. Unlike agy, copilot has no session-level timeout flag -- a hung job
- * just stays "running" until it exits on its own or ag_cancel kills it.
- */
-export function spawnCopilot(id, prompt, opts = {}) {
-  const { cwd, model, effort, resumeSessionId, addDirs = [], autoApprove = true } = opts;
-
-  const args = ["-p", prompt, "--output-format", "json"];
-  if (resumeSessionId) args.push("--resume", resumeSessionId);
-  if (model) args.push("--model", model);
-  if (effort) args.push("--reasoning-effort", effort);
-  for (const d of [cwd, ...addDirs]) args.push("--add-dir", path.resolve(d));
-  // --allow-all-tools is the documented minimum for non-interactive mode to
-  // write files at all; it does not also bypass path/URL confirmation the way
-  // agy's --dangerously-skip-permissions does.
-  if (autoApprove) args.push("--allow-all-tools");
-
-  ensureDirs();
-  fs.writeFileSync(promptPath(id), prompt);
-  const out = fs.openSync(outPath(id), "w");
-  const err = fs.openSync(errPath(id), "w");
-
-  const child = spawn(findCopilot(), args, {
-    cwd,
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", out, err],
-  });
-  // Detached + unref'd, so nothing else observes this child -- without a
-  // listener, a post-spawn failure (e.g. the binary vanishes between
-  // findCopilot() and spawn()) emits an unhandled 'error' that kills this
-  // process. reap()'s isAlive(pid) check already handles a dead/undefined
-  // pid, so this can just swallow the event.
-  child.on("error", () => {});
-  child.unref();
-  fs.closeSync(out);
-  fs.closeSync(err);
-  return child.pid;
-}
-
-/**
  * copilot --output-format json emits JSONL (one event per line), terminated by
  * a {"type":"result", sessionId, exitCode, usage} line. The response text is
  * not in that line -- it's the content of the last assistant.message event,
@@ -93,6 +49,14 @@ export function readResult(id) {
     return null;
   }
   if (!raw.trim()) return null;
+  // Unlike agy and claude, copilot streams this file for the whole run, so a
+  // poll lands mid-transcript far more often than not -- and without this,
+  // every one of those polls JSON.parses every line of an ever-growing
+  // transcript only to conclude the run isn't finished. No terminal result
+  // line means exactly that, and a substring scan settles it far cheaper. A
+  // false positive (the text appearing inside a message) just falls through
+  // to the real parse below, which still returns null correctly.
+  if (!raw.includes('"type":"result"')) return null;
 
   let resultEvent = null;
   let lastMessage = "";

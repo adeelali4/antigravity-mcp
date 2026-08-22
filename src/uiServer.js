@@ -94,7 +94,16 @@ export function startUiServer({ port = DEFAULT_UI_PORT } = {}) {
 
   function poll() {
     if (wss.clients.size === 0) return;
-    const board = read();
+    let board;
+    try {
+      board = read();
+    } catch {
+      // read() throws on a board that exists but won't parse, so mutate()
+      // can't blank it. A dashboard is the wrong place to die over that: it
+      // runs on a timer, and an uncaught throw here takes the whole UI
+      // process down. Hold the last good frame and retry next tick.
+      return;
+    }
     const { events, nextMap } = diffAgents(known, computeAgents(board));
     known = nextMap;
     broadcast(events);

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CLIENTS, AGY_SETTINGS, serverKey } from "./clients.js";
 import { findAgy } from "./agy.js";
+import { loadBackends } from "./backends.js";
 import { stateDir, mutate, read } from "./store.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -19,9 +20,22 @@ export async function doctor({ probe = false } = {}) {
   const major = Number(process.versions.node.split(".")[0]);
   add("node", major >= 18 ? PASS : FAIL, `v${process.versions.node}${major >= 18 ? "" : " (need >= 18.17)"}`);
 
-  const agy = findAgy({ required: false });
-  add("agy binary", agy ? PASS : FAIL, agy || "not found — set AGY_BIN, or install Antigravity");
+  // The whole delegation roster, installed or not: a backend with no binary
+  // gets no tools registered, so without this its absence is invisible.
+  for (const spec of loadBackends()) {
+    let bin = null;
+    try {
+      bin = spec.findBin({ required: false });
+    } catch { /* treat a resolver that throws as simply not installed */ }
+    const origin = spec.userDefined ? "your backends.json" : spec.verified ? "built-in" : "built-in, unverified";
+    add(
+      `delegate: ${spec.label}`,
+      bin ? PASS : WARN,
+      bin ? `${bin} (${origin})` : `not installed — no ${spec.prefix}_* tools (${origin})`
+    );
+  }
 
+  const agy = findAgy({ required: false });
   if (agy) {
     const v = spawnSync(agy, ["--version"], { encoding: "utf8", timeout: 20000 });
     const line = ((v.stdout || "") + (v.stderr || "")).split(/\r?\n/).find((l) => l.trim());

@@ -1,28 +1,31 @@
 /** `antigravity-mcp-server reset` — direct way to reset the board from the CLI. */
 
-import { mutate, read, logEvent } from "./store.js";
+import { resetBoard, read, logEvent } from "./store.js";
 
 export async function reset({ yes = false }) {
-  const b = read();
+  // A board too corrupt to parse is exactly when someone reaches for this
+  // command, so it must not be the one thing that can't run then. Counts are
+  // only for the summary; not having them is no reason to refuse the wipe.
+  let b;
+  try {
+    b = read();
+  } catch {
+    b = { tasks: [], locks: [], notes: [], unreadable: true };
+  }
   const summary = {
     tasks: b.tasks.length,
     locks: b.locks.length,
-    notes: b.notes.length
+    notes: b.notes.length,
+    ...(b.unreadable && { unreadable: true }),
   };
 
   if (!yes) {
     return { state: "dry-run", summary };
   }
 
-  await mutate((b) => {
-    b.tasks = [];
-    b.locks = [];
-    b.notes = [];
-    b.events = [];
-    b.presence = {};
-    b.seq = 0;
-    logEvent(b, "cli", "board.reset", "cleared via CLI");
-  });
+  // resetBoard, not mutate: mutate reads the existing board first, which is
+  // precisely what fails when the board is the thing that's broken.
+  await resetBoard((b) => logEvent(b, "cli", "board.reset", "cleared via CLI"));
 
   return { state: "success", summary };
 }

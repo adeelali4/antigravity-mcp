@@ -38,7 +38,25 @@ const alice = await connect("claude");
 const bob = await connect("antigravity");
 
 const tools = (await alice.listTools()).tools;
-check("stdio handshake + tools/list", tools.length === 27, `${tools.length} tools`);
+const names = new Set(tools.map((t) => t.name));
+// Not a fixed count: delegation tools are only registered for CLIs actually
+// installed, so the total legitimately differs per machine. Assert the shape
+// instead -- every coordination tool present, and every delegation lane that
+// IS offered offering its full set.
+const COORDINATION = [
+  "coop_status", "board_post", "board_update", "board_list",
+  "claim_paths", "release_paths", "check_paths",
+  "notes_send", "notes_read", "presence_set", "activity", "coop_reset",
+];
+check("stdio handshake + tools/list", tools.length >= COORDINATION.length, `${tools.length} tools`);
+check("every coordination tool present", COORDINATION.every((n) => names.has(n)),
+  COORDINATION.filter((n) => !names.has(n)).join(",") || "all");
+
+const lanes = [...names].filter((n) => n.endsWith("_delegate")).map((n) => n.replace("_delegate", ""));
+check("at least one delegation backend offered", lanes.length > 0, lanes.join(","));
+check("each backend offers a complete lane",
+  lanes.every((p) => ["_task_status", "_task_wait", "_cancel"].every((s) => names.has(p + s))),
+  lanes.map((p) => `${p}${names.has(p + "_followup") ? "+followup" : ""}`).join(" "));
 check("every tool documented", tools.every((t) => t.description?.length > 40));
 
 // Path locks must hold across two separate server processes.

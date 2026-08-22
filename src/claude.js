@@ -2,8 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { HOME, runsDir, ensureDirs } from "./store.js";
+import { HOME, runsDir } from "./store.js";
 import { WIN, findBinary } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
@@ -29,45 +28,6 @@ export function findClaude({ required = true } = {}) {
 export const outPath = (id) => path.join(runsDir(), `${id}.json`);
 export const errPath = (id) => path.join(runsDir(), `${id}.err`);
 export const promptPath = (id) => path.join(runsDir(), `${id}.prompt.txt`);
-
-/**
- * Launch another `claude` instance detached, streaming its result straight to
- * disk. Detaching means a long job survives this MCP server being restarted;
- * status is recovered later by reading the run file rather than by holding a
- * child handle. This is a fully independent CLI process with its own session
- * -- not a subagent inside the calling session.
- */
-export function spawnClaude(id, prompt, opts = {}) {
-  const { cwd, model, resumeSessionId, addDirs = [], autoApprove = true } = opts;
-
-  const args = [prompt, "--print", "--output-format", "json"];
-  if (resumeSessionId) args.push("--resume", resumeSessionId);
-  if (model) args.push("--model", model);
-  for (const d of [cwd, ...addDirs]) args.push("--add-dir", path.resolve(d));
-  if (autoApprove) args.push("--dangerously-skip-permissions");
-
-  ensureDirs();
-  fs.writeFileSync(promptPath(id), prompt);
-  const out = fs.openSync(outPath(id), "w");
-  const err = fs.openSync(errPath(id), "w");
-
-  const child = spawn(findClaude(), args, {
-    cwd,
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", out, err],
-  });
-  // Detached + unref'd, so nothing else observes this child -- without a
-  // listener, a post-spawn failure (e.g. the binary vanishes between
-  // findClaude() and spawn()) emits an unhandled 'error' that kills this
-  // process. reap()'s isAlive(pid) check already handles a dead/undefined
-  // pid, so this can just swallow the event.
-  child.on("error", () => {});
-  child.unref();
-  fs.closeSync(out);
-  fs.closeSync(err);
-  return child.pid;
-}
 
 /**
  * claude --output-format json prints one JSON object with the final text
