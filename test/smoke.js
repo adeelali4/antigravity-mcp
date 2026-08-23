@@ -254,14 +254,48 @@ check("getAntigravityActivity reads the newest transcript", act?.status === "sea
 // office UI is a long-running background server with no reliable way to know
 // which project the viewer currently cares about, and a scoped version that
 // guesses wrong silently shows Claude as idle while it's actively working
-// (the bug this replaced). So: any session, anywhere, freshest wins -- same
-// policy as getAntigravityActivity(), verified here by writing the session
-// into a directory that looks nothing like the "current" project.
+// (a bug this project shipped once already). So: any session, anywhere,
+// freshest wins -- same policy as getAntigravityActivity() -- verified here
+// by writing the session into a directory that looks nothing like the
+// "current" project.
+//
+// Fixture lines use Claude Code's REAL transcript shape (message.content[]
+// with a tool_use block), sampled directly from live session files on this
+// machine while building this -- not guessed. getClaudeActivity() used to
+// regex-match "tool_use...name":"Bash" against the raw byte tail and return
+// one of five hardcoded strings ("Running terminal command") regardless of
+// what actually ran; these checks are here specifically to pin the
+// regression -- the detail must name the real command, file, or query.
 const claudeDir = claudeProjectDir(path.join(SANDBOX, "some-other-project-entirely"));
 fs.mkdirSync(claudeDir, { recursive: true });
-fs.writeFileSync(path.join(claudeDir, "session.jsonl"), '{"type":"tool_use","name":"Bash"}\n');
+const claudeSession = path.join(claudeDir, "session.jsonl");
+const claudeLine = (content) => JSON.stringify({ message: { role: "assistant", content: [content] } }) + "\n";
+
+fs.writeFileSync(
+  claudeSession,
+  claudeLine({ type: "tool_use", name: "Bash", input: { command: "npm test", description: "Run the test suite" } })
+);
 resetHostScanCache();
-check("getClaudeActivity finds a session regardless of project", getClaudeActivity()?.status === "bashing");
+const claudeBash = getClaudeActivity();
+check("getClaudeActivity finds a session regardless of project", claudeBash?.status === "bashing", claudeBash?.status);
+check("getClaudeActivity surfaces the actual command description, not a canned string",
+  claudeBash?.detail === "Run the test suite", claudeBash?.detail);
+
+fs.appendFileSync(claudeSession, claudeLine({ type: "tool_use", name: "Read", input: { file_path: "C:\\proj\\src\\auth.ts" } }));
+resetHostScanCache();
+const claudeRead = getClaudeActivity();
+check("getClaudeActivity names the actual file being read", claudeRead?.detail === "Reading: auth.ts", claudeRead?.detail);
+
+fs.appendFileSync(claudeSession, claudeLine({ type: "tool_use", name: "Grep", input: { pattern: "handleSubmit" } }));
+resetHostScanCache();
+const claudeGrep = getClaudeActivity();
+check("getClaudeActivity names the actual search pattern", claudeGrep?.detail === "Searching: handleSubmit", claudeGrep?.detail);
+
+fs.appendFileSync(claudeSession, claudeLine({ type: "text", text: "Let me think about this differently." }));
+resetHostScanCache();
+const claudeThinking = getClaudeActivity();
+check("getClaudeActivity reads text-only turns as active, not idle",
+  claudeThinking?.status === "working" && claudeThinking?.detail === "Thinking & responding", claudeThinking?.detail);
 
 // computeAgents check: a status the agent reported itself outranks anything
 // inferred from a transcript.
@@ -277,6 +311,10 @@ const board = {
 const claudeAgent = computeAgents(board).find((a) => a.id === "claude");
 check("presence_set status wins over inferred activity", claudeAgent?.status === "blocked", claudeAgent?.status);
 
+// Overwrite (not append) so this doesn't depend on whatever the earlier
+// getClaudeActivity() checks left as the file's last line.
+fs.writeFileSync(claudeSession, claudeLine({ type: "tool_use", name: "Bash", input: { description: "Run the test suite" } }));
+resetHostScanCache();
 board.presence.claude.status = "idle";
 board.presence.claude.detail = "";
 const inferredAgent = computeAgents(board).find((a) => a.id === "claude");

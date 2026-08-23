@@ -248,6 +248,54 @@ export function claudeProjectDir(cwd) {
  * reason: on a single-user machine there is normally one active session, and
  * showing what IT is doing beats guessing a project and getting it wrong.
  */
+/**
+ * Claude tool name -> office status + the specific thing it's doing. Field
+ * names below are verified against real transcripts on this machine (Bash,
+ * Read, Write, Edit, Grep, Glob, WebSearch all sampled directly), not
+ * guessed -- unlike Copilot/Cursor, whose on-disk logs don't expose this at
+ * all (see getClaudeActivity's own doc comment for why those two are left
+ * alone rather than reverse-engineered from one session's worth of data).
+ */
+function describeClaudeTool(name, input = {}) {
+  switch (name) {
+    case "Bash":
+      // Claude Code's own `description` field is already a short human
+      // summary of the command ("Run the test suite") -- better than the
+      // raw command line, which is often long, quoted, and pipe-heavy.
+      return { status: "bashing", detail: input.description || (input.command ? `Running: ${String(input.command).slice(0, 45)}` : "Running command") };
+    case "Read":
+      return { status: "reading", detail: input.file_path ? `Reading: ${path.basename(input.file_path)}` : "Reading file" };
+    case "Write":
+    case "Edit":
+      return { status: "developing", detail: input.file_path ? `Editing: ${path.basename(input.file_path)}` : "Editing files" };
+    case "Grep":
+      return { status: "searching", detail: input.pattern ? `Searching: ${String(input.pattern).slice(0, 45)}` : "Searching codebase" };
+    case "Glob":
+      return { status: "finding", detail: input.pattern ? `Finding: ${String(input.pattern).slice(0, 45)}` : "Finding files" };
+    case "WebSearch":
+    case "WebFetch":
+      return { status: "searching", detail: input.query ? `Searching: ${String(input.query).slice(0, 45)}` : "Searching the web" };
+    case "Task":
+      return { status: "delegating", detail: input.description ? String(input.description).slice(0, 45) : "Running a subagent" };
+    default:
+      // An unrecognised tool is still real, specific activity -- naming it
+      // beats collapsing every unlisted tool into one generic sentence.
+      return { status: "working", detail: `Using ${name}` };
+  }
+}
+
+/**
+ * Check Claude Code session activity, across every project on the machine.
+ *
+ * Walks the transcript newest-line-first and parses each as real JSON --
+ * this used to regex-match "tool_use...name":"Bash" etc. against the raw
+ * 8KB tail as one blob, which only ever proved SOME matching tool call
+ * existed somewhere in that window, not which one was most recent, and
+ * returned one of five hardcoded strings ("Running terminal command")
+ * regardless of what the command, file, or query actually was. Mirrors
+ * getAntigravityActivity()'s approach, which already parses real JSON per
+ * line rather than guessing at structure with regex.
+ */
 export function getClaudeActivity() {
   const claudeProjects = path.join(hostHome(), ".claude", "projects");
   const now = Date.now();
@@ -264,23 +312,35 @@ export function getClaudeActivity() {
   if (!newest || now - newest.mtime > STALE_MS) return null;
   const newestMtime = newest.mtime;
 
-  const tail = getTail(newest.file, 8192);
+  const tail = getTail(newest.file, 16384);
   if (!tail.trim()) return null;
 
-  if (/tool_use.*"name"\s*:\s*"Bash/i.test(tail)) {
-    return { status: "bashing", detail: "Running terminal command", ts: newestMtime };
-  }
-  if (/tool_use.*"name"\s*:\s*"(Glob|Find)"/i.test(tail)) {
-    return { status: "finding", detail: "Finding files", ts: newestMtime };
-  }
-  if (/tool_use.*"name"\s*:\s*"Read"/i.test(tail)) {
-    return { status: "reading", detail: "Reading file", ts: newestMtime };
-  }
-  if (/tool_use.*"name"\s*:\s*"(Grep|Search)"/i.test(tail)) {
-    return { status: "searching", detail: "Searching codebase", ts: newestMtime };
-  }
-  if (/tool_use.*"name"\s*:\s*"(Edit|Write)"/i.test(tail)) {
-    return { status: "developing", detail: "Editing files", ts: newestMtime };
+  const lines = tail.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).reverse();
+  for (const line of lines) {
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue; // a byte-window tail can start mid-line; skip the fragment
+    }
+    const content = obj?.message?.content;
+    if (!Array.isArray(content)) continue;
+
+    // A message can carry several content blocks; only a tool_use one says
+    // anything about what's currently running.
+    const toolUse = content.find((c) => c?.type === "tool_use");
+    if (toolUse) {
+      const { status, detail } = describeClaudeTool(toolUse.name, toolUse.input);
+      return { status, detail, ts: newestMtime };
+    }
+
+    // No tool call in this message: if it's assistant text, Claude is
+    // actively composing a reply or reasoning, which is real activity too --
+    // showing that beats falling further back to a stale tool call from
+    // several turns ago just because this line didn't have one.
+    if (obj?.message?.role === "assistant" && content.some((c) => c?.type === "text")) {
+      return { status: "working", detail: "Thinking & responding", ts: newestMtime };
+    }
   }
 
   return { status: "working", detail: "Active in Claude session", ts: newestMtime };
