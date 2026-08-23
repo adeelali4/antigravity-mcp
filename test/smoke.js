@@ -216,6 +216,26 @@ fs.writeFileSync(path.join(mockRunDir, "testtask4.json"), JSON.stringify({ name:
 const inferredRead = inferLiveActivity({ id: "testtask4" });
 check("inferLiveActivity detects reading", inferredRead?.status === "reading");
 
+// Delegated Copilot/Cursor tasks must show real activity too, and must not
+// depend on any guessed project cwd the way the old getClaudeActivity did --
+// inferLiveActivity reads only runsDir(), this server's own state dir, so it
+// can never be affected by which directory the office UI happens to be
+// running from. Proven here by asserting it against a cwd that matches
+// nothing real on the machine.
+for (const [ownerId, taskFile] of [["copilot-agent", "copilot-task"], ["cursor-agent", "cursor-task"]]) {
+  fs.writeFileSync(path.join(mockRunDir, `${taskFile}.json`), JSON.stringify({ name: "grep_search", Query: "handleSubmit" }));
+  const board = {
+    presence: {},
+    tasks: [{
+      id: taskFile, kind: "delegated", owner: ownerId, status: "running", pid: process.pid,
+      title: "wire up the form", created: Date.now(), updated: Date.now(),
+    }],
+    locks: [], notes: [], events: [],
+  };
+  const row = computeAgents(board).find((a) => a.id === ownerId);
+  check(`delegated ${ownerId} task shows real activity, not idle`, row?.status === "searching", row?.status);
+}
+
 // Host-transcript detection, against fixtures under the sandboxed host home
 // rather than whatever the developer's real ~/.gemini and ~/.claude contain.
 const agyTranscript = path.join(
@@ -230,13 +250,18 @@ resetHostScanCache();
 const act = getAntigravityActivity();
 check("getAntigravityActivity reads the newest transcript", act?.status === "searching", act?.detail || "null");
 
-const projectCwd = path.join(SANDBOX, "some-project");
-const claudeDir = claudeProjectDir(projectCwd);
+// getClaudeActivity() is deliberately unscoped -- see its doc comment. The
+// office UI is a long-running background server with no reliable way to know
+// which project the viewer currently cares about, and a scoped version that
+// guesses wrong silently shows Claude as idle while it's actively working
+// (the bug this replaced). So: any session, anywhere, freshest wins -- same
+// policy as getAntigravityActivity(), verified here by writing the session
+// into a directory that looks nothing like the "current" project.
+const claudeDir = claudeProjectDir(path.join(SANDBOX, "some-other-project-entirely"));
 fs.mkdirSync(claudeDir, { recursive: true });
 fs.writeFileSync(path.join(claudeDir, "session.jsonl"), '{"type":"tool_use","name":"Bash"}\n');
 resetHostScanCache();
-check("getClaudeActivity finds this project's session", getClaudeActivity(projectCwd)?.status === "bashing");
-check("getClaudeActivity ignores other projects", getClaudeActivity(path.join(SANDBOX, "other-project")) === null);
+check("getClaudeActivity finds a session regardless of project", getClaudeActivity()?.status === "bashing");
 
 // computeAgents check: a status the agent reported itself outranks anything
 // inferred from a transcript.
@@ -249,12 +274,12 @@ const board = {
   notes: [],
   events: [],
 };
-const claudeAgent = computeAgents(board, { projectCwd }).find((a) => a.id === "claude");
+const claudeAgent = computeAgents(board).find((a) => a.id === "claude");
 check("presence_set status wins over inferred activity", claudeAgent?.status === "blocked", claudeAgent?.status);
 
 board.presence.claude.status = "idle";
 board.presence.claude.detail = "";
-const inferredAgent = computeAgents(board, { projectCwd }).find((a) => a.id === "claude");
+const inferredAgent = computeAgents(board).find((a) => a.id === "claude");
 check("idle presence falls back to inferred activity", inferredAgent?.status === "bashing", inferredAgent?.status);
 
 // --- failover: a limited backend must hand its work to one that can take it ---
@@ -317,7 +342,7 @@ for (const [what, extra] of busyCases) {
     presence: { worker: { status: "idle", detail: "", ts: Date.now(), pid: process.pid } },
     tasks: [], locks: [], notes: [], events: [], ...extra,
   };
-  const row = computeAgents(b, { projectCwd: path.join(SANDBOX, "no-such-project") }).find((a) => a.id === "worker");
+  const row = computeAgents(b).find((a) => a.id === "worker");
   check(`not idle while ${what}`, row?.status !== "idle", row?.status);
 }
 
@@ -333,7 +358,7 @@ const handoffBoard = {
   }],
   locks: [], notes: [], events: [],
 };
-const boss = computeAgents(handoffBoard, { projectCwd: path.join(SANDBOX, "no-such-project") }).find((a) => a.id === "boss");
+const boss = computeAgents(handoffBoard).find((a) => a.id === "boss");
 check("delegator shows as delegating, not idle", boss?.status === "delegating", boss?.status);
 check("delegator names who it handed off to", /claude/i.test(boss?.task || ""), boss?.task || "");
 

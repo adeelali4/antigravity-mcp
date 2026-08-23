@@ -223,24 +223,44 @@ export function getAntigravityActivity() {
 
 /**
  * Claude Code stores each project's sessions in a directory named after the
- * project cwd with every non-alphanumeric character replaced by "-".
+ * project cwd with every non-alphanumeric character replaced by "-". Kept
+ * around for tests and any future caller that genuinely has a project cwd to
+ * scope to -- getClaudeActivity() itself no longer uses it (see below).
  */
 export function claudeProjectDir(cwd) {
   return path.join(hostHome(), ".claude", "projects", String(cwd).replace(/[^a-zA-Z0-9]/g, "-"));
 }
 
 /**
- * Check Claude Code session activity for one project.
+ * Check Claude Code session activity, across every project on the machine.
  *
- * Scoped to `projectCwd` on purpose: the office UI shows the agents working on
- * THIS project, and an unscoped sweep reported a Claude session in an
- * unrelated repo as this project's agent being busy.
+ * This used to scope to one `projectCwd` and only look in that project's
+ * session directory. That reads right on paper -- don't attribute another
+ * repo's Claude session to this one -- but nothing can actually SUPPLY that
+ * cwd correctly: the office UI is a long-running background server, started
+ * once from wherever, and there is no channel from the browser tab (or from
+ * Claude Code itself) telling it which project the viewer currently cares
+ * about. In practice the scoped version silently looked in the wrong
+ * directory -- the office UI's own launch cwd, not the project being worked
+ * on -- found nothing, and showed Claude as idle while it was actively
+ * working. Scanning every project and taking the most recently touched one
+ * is exactly what getAntigravityActivity() already does, for the same
+ * reason: on a single-user machine there is normally one active session, and
+ * showing what IT is doing beats guessing a project and getting it wrong.
  */
-export function getClaudeActivity(projectCwd = process.cwd()) {
-  const dir = claudeProjectDir(projectCwd);
+export function getClaudeActivity() {
+  const claudeProjects = path.join(hostHome(), ".claude", "projects");
   const now = Date.now();
 
-  const newest = newestFile(`claude:${dir}`, () => filesIn(dir));
+  const newest = newestFile(`claude:${claudeProjects}`, () => {
+    let dirs = [];
+    try {
+      dirs = fs.readdirSync(claudeProjects, { withFileTypes: true }).filter((d) => d.isDirectory());
+    } catch {
+      return [];
+    }
+    return dirs.flatMap((d) => filesIn(path.join(claudeProjects, d.name)));
+  });
   if (!newest || now - newest.mtime > STALE_MS) return null;
   const newestMtime = newest.mtime;
 
@@ -382,7 +402,7 @@ const isClaudeId = (id) => id === "claude" || id === "claude-code" || id.startsW
  * us something inference cannot know ("blocked, waiting on an API key"), so
  * that always wins while it's fresh.
  */
-export function computeAgents(board, { projectCwd = process.cwd() } = {}) {
+export function computeAgents(board) {
   const now = Date.now();
   const info = new Map();
 
@@ -391,7 +411,7 @@ export function computeAgents(board, { projectCwd = process.cwd() } = {}) {
     info.set("antigravity", { status: agyLive.status, detail: agyLive.detail, ts: agyLive.ts });
   }
 
-  const claudeLive = getClaudeActivity(projectCwd);
+  const claudeLive = getClaudeActivity();
   if (claudeLive) {
     info.set("claude-code", { status: claudeLive.status, detail: claudeLive.detail, ts: claudeLive.ts });
   }
