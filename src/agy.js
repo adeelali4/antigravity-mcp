@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { HOME, runsDir } from "./store.js";
-import { WIN, findBinary } from "./proc.js";
+import { WIN, findBinary, standardCandidates } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
 
@@ -17,11 +17,10 @@ export function findAgy({ required = true } = {}) {
     label: "Antigravity CLI (agy)",
     required,
     candidates: [
+      // Antigravity's own installer locations, then every standard one.
       WIN && path.join(HOME, "AppData", "Local", "agy", "bin", "agy.exe"),
-      path.join(HOME, ".local", "bin", WIN ? "agy.exe" : "agy"),
       path.join(HOME, ".agy", "bin", WIN ? "agy.exe" : "agy"),
-      "/usr/local/bin/agy",
-      "/opt/homebrew/bin/agy",
+      ...standardCandidates("agy"),
     ].filter(Boolean),
   });
   return found ? (cached = found) : null;

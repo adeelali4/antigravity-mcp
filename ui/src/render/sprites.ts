@@ -266,6 +266,9 @@ function drawStatusBadge(ctx: CanvasRenderingContext2D, x: number, y: number, st
     case "reading":
       label(ctx, "≡", x, y, color, 12);
       return;
+    case "delegating":
+      label(ctx, "→", x, y, color, 13);
+      return;
     case "testing":
       label(ctx, "✓", x, y, color, 12);
       return;

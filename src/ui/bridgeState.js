@@ -7,12 +7,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isAlive } from "../proc.js";
-import { runsDir, HOME } from "../store.js";
+import { runsDir, hostHome } from "../store.js";
 
 /** An agent whose presence heartbeat (or active task) is older than this reads as disconnected. */
 const STALE_MS = 45_000;
 /** An agent with activity/events within this window is treated as actively working. */
 const ACTIVE_ACTIVITY_MS = 30_000;
+/** A full transcript-directory walk runs at most this often; ticks in between re-stat known files only. */
+const RESCAN_MS = 30_000;
+/** How many recently-touched files a full scan remembers for the cheap per-tick path. */
+const WATCH_CANDIDATES = 8;
 
 function humanize(id) {
   return id
@@ -40,50 +44,109 @@ function getTail(filePath, maxBytes = 8192) {
   }
 }
 
+function mtimeOf(file) {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+const scanCache = new Map(); // cache key -> { at, candidates: string[] }
+
+/** Drop remembered scan results. Tests use this after writing fixtures. */
+export function resetHostScanCache() {
+  scanCache.clear();
+}
+
+/**
+ * Newest-file lookup that doesn't walk the whole tree on every poll tick.
+ *
+ * The UI polls once a second and these directories accumulate one file per
+ * session forever, so a naive readdir+stat sweep is O(every session ever) per
+ * second. Instead a full walk runs at most once per RESCAN_MS and remembers
+ * only the few newest files; every tick in between just re-stats those. A
+ * session started after the last walk shows up on the next one -- at worst
+ * RESCAN_MS late, comfortably inside the STALE_MS window it feeds.
+ */
+function newestFile(key, listFiles) {
+  const now = Date.now();
+  let entry = scanCache.get(key);
+  if (!entry || now - entry.at > RESCAN_MS) {
+    const found = [];
+    for (const file of listFiles()) {
+      const m = mtimeOf(file);
+      if (m) found.push({ file, m });
+    }
+    found.sort((a, b) => b.m - a.m);
+    entry = { at: now, candidates: found.slice(0, WATCH_CANDIDATES).map((f) => f.file) };
+    scanCache.set(key, entry);
+  }
+
+  let best = null;
+  let bestMtime = 0;
+  for (const file of entry.candidates) {
+    const m = mtimeOf(file);
+    if (m > bestMtime) {
+      bestMtime = m;
+      best = file;
+    }
+  }
+  return best ? { file: best, mtime: bestMtime } : null;
+}
+
+function filesIn(dir) {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isFile())
+      .map((d) => path.join(dir, d.name));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Check Antigravity brain transcripts for active host agent actions
  * (finding, reading, bashing, searching, developing, planning).
+ *
+ * Unlike Claude's, these paths carry no workspace identity, so this cannot be
+ * scoped to the current project -- an Antigravity session in another repo will
+ * still register here. Scoping it needs a workspace marker inside the brain
+ * directory that the format doesn't currently expose.
  */
 export function getAntigravityActivity() {
+  const home = hostHome();
   const brainRoots = [
-    path.join(HOME, ".gemini", "antigravity-cli", "brain"),
-    path.join(HOME, ".gemini", "antigravity-ide", "brain"),
-    path.join(HOME, ".gemini", "brain"),
+    path.join(home, ".gemini", "antigravity-cli", "brain"),
+    path.join(home, ".gemini", "antigravity-ide", "brain"),
+    path.join(home, ".gemini", "brain"),
   ];
 
   const now = Date.now();
-  let newestFile = null;
-  let newestMtime = 0;
-
-  for (const root of brainRoots) {
-    if (!fs.existsSync(root)) continue;
-    let convDirs = [];
-    try {
-      convDirs = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const d of convDirs) {
-      if (!d.isDirectory()) continue;
-      const transcriptFile = path.join(root, d.name, ".system_generated", "logs", "transcript.jsonl");
+  const newest = newestFile(`antigravity:${home}`, () => {
+    const out = [];
+    for (const root of brainRoots) {
+      let convDirs = [];
       try {
-        if (fs.existsSync(transcriptFile)) {
-          const stat = fs.statSync(transcriptFile);
-          if (stat.mtimeMs > newestMtime) {
-            newestMtime = stat.mtimeMs;
-            newestFile = transcriptFile;
-          }
-        }
-      } catch {}
+        convDirs = fs.readdirSync(root, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const d of convDirs) {
+        if (!d.isDirectory()) continue;
+        out.push(path.join(root, d.name, ".system_generated", "logs", "transcript.jsonl"));
+      }
     }
-  }
+    return out;
+  });
 
-  if (!newestFile || now - newestMtime > STALE_MS) {
+  if (!newest || now - newest.mtime > STALE_MS) {
     return null;
   }
+  const newestMtime = newest.mtime;
 
-  const tail = getTail(newestFile, 16384);
+  const tail = getTail(newest.file, 16384);
   if (!tail.trim()) return null;
 
   const lines = tail.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).reverse();
@@ -159,40 +222,29 @@ export function getAntigravityActivity() {
 }
 
 /**
- * Check Claude Code session activity in ~/.claude/projects/
+ * Claude Code stores each project's sessions in a directory named after the
+ * project cwd with every non-alphanumeric character replaced by "-".
  */
-export function getClaudeActivity() {
-  const claudeProjects = path.join(HOME, ".claude", "projects");
+export function claudeProjectDir(cwd) {
+  return path.join(hostHome(), ".claude", "projects", String(cwd).replace(/[^a-zA-Z0-9]/g, "-"));
+}
+
+/**
+ * Check Claude Code session activity for one project.
+ *
+ * Scoped to `projectCwd` on purpose: the office UI shows the agents working on
+ * THIS project, and an unscoped sweep reported a Claude session in an
+ * unrelated repo as this project's agent being busy.
+ */
+export function getClaudeActivity(projectCwd = process.cwd()) {
+  const dir = claudeProjectDir(projectCwd);
   const now = Date.now();
-  if (!fs.existsSync(claudeProjects)) return null;
 
-  let newestFile = null;
-  let newestMtime = 0;
+  const newest = newestFile(`claude:${dir}`, () => filesIn(dir));
+  if (!newest || now - newest.mtime > STALE_MS) return null;
+  const newestMtime = newest.mtime;
 
-  try {
-    const projDirs = fs.readdirSync(claudeProjects, { withFileTypes: true });
-    for (const d of projDirs) {
-      if (!d.isDirectory()) continue;
-      const dirPath = path.join(claudeProjects, d.name);
-      const files = fs.readdirSync(dirPath);
-      for (const f of files) {
-        const fullPath = path.join(dirPath, f);
-        try {
-          const stat = fs.statSync(fullPath);
-          if (stat.mtimeMs > newestMtime) {
-            newestMtime = stat.mtimeMs;
-            newestFile = fullPath;
-          }
-        } catch {}
-      }
-    }
-  } catch {
-    return null;
-  }
-
-  if (!newestFile || now - newestMtime > STALE_MS) return null;
-
-  const tail = getTail(newestFile, 8192);
+  const tail = getTail(newest.file, 8192);
   if (!tail.trim()) return null;
 
   if (/tool_use.*"name"\s*:\s*"Bash/i.test(tail)) {
@@ -292,21 +344,55 @@ export function inferLiveActivity(task) {
 }
 
 /**
- * Normalise raw board state into one row per agent identity.
- * Accurately surfaces rich live activities (finding, reading, bashing, searching,
- * developing, working, etc.) so agents do not falsely appear idle.
+ * What a board event says the agent was doing.
+ *
+ * The office UI reads "idle" as nobody home, so an agent that is demonstrably
+ * mid-task must never land there. Every event kind therefore resolves to a
+ * real activity, and anything unrecognised falls back to "working" rather than
+ * to idle -- an event exists precisely because the agent did something.
  */
-export function computeAgents(board) {
+const EVENT_STATUS = {
+  "paths.check": ["finding", "Checking files"],
+  "locks.claim": ["developing", "Claiming files"],
+  "locks.release": ["working", "Wrapping up"],
+  "locks.auto-release": ["working", "Wrapping up"],
+  "note.read": ["reading", "Reading notes"],
+  "note.sent": ["working", "Sending a note"],
+  "task.delegated": ["delegating", "Handing off work"],
+  "task.failover": ["delegating", "Re-routing work"],
+  "task.reassigned": ["delegating", "Re-routing work"],
+  "board.post": ["working", "Posting to the board"],
+  "presence": ["working", null],
+};
+
+function statusFromEvent(event) {
+  const [status, detail] = EVENT_STATUS[event.kind] || ["working", null];
+  return { status, detail: detail || event.detail || "Active" };
+}
+
+const isAntigravityId = (id) => id === "agy" || id === "antigravity" || id.startsWith("antigravity");
+const isClaudeId = (id) => id === "claude" || id === "claude-code" || id.startsWith("claude");
+
+/**
+ * Normalise raw board state into one row per agent identity.
+ *
+ * Surfaces rich live activity (finding, reading, bashing, searching,
+ * developing) so agents don't falsely read as idle -- but only ever as a
+ * fallback. An agent that reported its own status via presence_set is telling
+ * us something inference cannot know ("blocked, waiting on an API key"), so
+ * that always wins while it's fresh.
+ */
+export function computeAgents(board, { projectCwd = process.cwd() } = {}) {
   const now = Date.now();
   const info = new Map();
 
   const agyLive = getAntigravityActivity();
-  if (agyLive && !info.has("antigravity")) {
+  if (agyLive) {
     info.set("antigravity", { status: agyLive.status, detail: agyLive.detail, ts: agyLive.ts });
   }
 
-  const claudeLive = getClaudeActivity();
-  if (claudeLive && !info.has("claude") && !info.has("claude-code")) {
+  const claudeLive = getClaudeActivity(projectCwd);
+  if (claudeLive) {
     info.set("claude-code", { status: claudeLive.status, detail: claudeLive.detail, ts: claudeLive.ts });
   }
 
@@ -354,6 +440,8 @@ export function computeAgents(board) {
     let activeDetail = p.detail || null;
 
     if (running) {
+      // This id IS the worker on a live task: read what it is doing from the
+      // task's own output, and fall back to the task title, never to idle.
       const live = inferLiveActivity(running);
       if (live) {
         activeStatus = live.status;
@@ -363,59 +451,47 @@ export function computeAgents(board) {
         activeDetail = running.title;
       }
     } else {
-      // Check host activity first for Antigravity and Claude
-      if ((id === "antigravity" || id.startsWith("antigravity") || id === "agy") && agyLive) {
-        activeStatus = agyLive.status;
-        activeDetail = agyLive.detail;
-      } else if ((id === "claude" || id.startsWith("claude") || id === "claude-code") && claudeLive) {
-        activeStatus = claudeLive.status;
-        activeDetail = claudeLive.detail;
+      // Resolution order, most authoritative first. Every branch below yields a
+      // real activity: "idle" is only reached when nothing at all says
+      // otherwise, because the UI draws idle as an empty desk and an agent that
+      // is mid-search must never look like it went home.
+      const isFresh = now - (p.ts || 0) < STALE_MS;
+      const hasExplicitNonIdle = p.status && p.status !== "idle";
+      const hostLive = isAntigravityId(id) ? agyLive : isClaudeId(id) ? claudeLive : null;
+      const heldLocks = (board.locks || []).filter((l) => l.owner === id);
+      const recentEvent = (board.events || [])
+        .slice(-40)
+        .reverse()
+        .find((e) => e.agent === id && now - e.ts < ACTIVE_ACTIVITY_MS);
+
+      if (hasExplicitNonIdle && isFresh) {
+        // 1. What the agent said about itself. It knows things inference can't.
+        activeStatus = p.status;
+        activeDetail = p.detail || null;
+      } else if (hostLive) {
+        // 2. Its live transcript -- searching, reading, running a command.
+        activeStatus = hostLive.status;
+        activeDetail = hostLive.detail;
+      } else if (visiting) {
+        // 3. It has work running at another agent right now: that is a hand-off
+        //    in progress, not idleness, however quiet its own session is.
+        activeStatus = "delegating";
+        activeDetail = `Handed off to ${humanize(visiting)}`;
+      } else if (recentEvent) {
+        // 4. Anything it did on the board in the last window.
+        const from = statusFromEvent(recentEvent);
+        activeStatus = from.status;
+        activeDetail = from.detail;
+      } else if (heldLocks.length && isFresh) {
+        // 5. Still holding files. Quiet, but not finished.
+        activeStatus = "developing";
+        activeDetail = `Editing: ${heldLocks.map((l) => path.basename(l.path)).join(", ")}`;
       } else {
-        // Check explicit status reported by presence_set
-        const hasExplicitNonIdle = p.status && p.status !== "idle";
-        const isFresh = now - (p.ts || 0) < STALE_MS;
-
-        if (hasExplicitNonIdle && isFresh) {
-          activeStatus = p.status;
-          activeDetail = p.detail || null;
-        } else {
-          // Check if holding active locks
-          const heldLocks = (board.locks || []).filter((l) => l.owner === id);
-          if (heldLocks.length > 0 && isFresh) {
-            activeStatus = "developing";
-            activeDetail = `Editing: ${heldLocks.map((l) => path.basename(l.path)).join(", ")}`;
-          } else {
-            // Check recent events for this agent
-            const recentEvent = (board.events || [])
-              .slice(-20)
-              .reverse()
-              .find((e) => e.agent === id && now - e.ts < ACTIVE_ACTIVITY_MS);
-
-            if (recentEvent) {
-              if (recentEvent.kind === "paths.check") {
-                activeStatus = "finding";
-                activeDetail = recentEvent.detail || "Checking files";
-              } else if (recentEvent.kind === "locks.claim") {
-                activeStatus = "developing";
-                activeDetail = recentEvent.detail || "Claiming locks";
-              } else if (recentEvent.kind === "note.read") {
-                activeStatus = "reading";
-                activeDetail = recentEvent.detail || "Reading notes";
-              } else if (recentEvent.kind === "task.delegate" || recentEvent.kind === "task.followup") {
-                activeStatus = "working";
-                activeDetail = recentEvent.detail || "Delegating work";
-              } else {
-                activeStatus = inMeeting ? "working" : p.status || "idle";
-              }
-            } else {
-              activeStatus = inMeeting ? "working" : p.status || "idle";
-            }
-          }
-        }
+        activeStatus = inMeeting ? "working" : p.status || "idle";
       }
     }
 
-    const hostTs = (id === "antigravity" || id.startsWith("antigravity") || id === "agy") && agyLive ? agyLive.ts : (id === "claude" || id.startsWith("claude")) && claudeLive ? claudeLive.ts : 0;
+    const hostTs = (isAntigravityId(id) && agyLive?.ts) || (isClaudeId(id) && claudeLive?.ts) || 0;
     const lastTs = Math.max(p.ts || 0, running?.updated || 0, hostTs);
     agents.push({
       id,

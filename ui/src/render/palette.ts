@@ -52,6 +52,8 @@ export function statusColor(status: string): string {
       return PALETTE.accentAmber;
     case "searching":
       return PALETTE.accentBlue;
+    case "delegating":
+      return PALETTE.accentPurple;
     case "testing":
       return PALETTE.accentAmber;
     case "reviewing":
@@ -77,6 +79,8 @@ export function screenColorFor(status: string): string {
       return PALETTE.screenSearch;
     case "reading":
       return PALETTE.screenRead;
+    case "delegating":
+      return PALETTE.screenReview;
     case "bashing":
       return PALETTE.screenBash;
     case "testing":

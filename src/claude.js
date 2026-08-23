@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { HOME, runsDir } from "./store.js";
-import { WIN, findBinary } from "./proc.js";
+import { WIN, findBinary, standardCandidates } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
 
@@ -16,11 +16,7 @@ export function findClaude({ required = true } = {}) {
     binName: "claude",
     label: "Claude Code CLI (claude)",
     required,
-    candidates: [
-      path.join(HOME, ".local", "bin", WIN ? "claude.exe" : "claude"),
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-    ],
+    candidates: standardCandidates("claude"),
   });
   return found ? (cached = found) : null;
 }

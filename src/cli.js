@@ -68,9 +68,9 @@ const HELP = `
     antigravity-mcp-server reassign <id> <to>
                                            Rerun a task's brief on another CLI without re-prompting
     antigravity-mcp-server lock <paths...> Lock files/dirs before editing (--note <text>)
-    antigravity-mcp-server unlock [path]   Release path locks (--all to drop all locks)
+    antigravity-mcp-server unlock <path>   Release a path lock (--all for every lock, --owner <id> to narrow)
     antigravity-mcp-server note <to> <msg> Leave a message on the board for an agent
-    antigravity-mcp-server inbox [--unread] Read messages addressed to you or all
+    antigravity-mcp-server inbox [--unread] Read messages (--mark-read to mark them read)
 
   delegate options
     --title <label>           Short label for the board
@@ -112,6 +112,10 @@ const HELP = `
     COPILOT_BIN              Path to the copilot binary
     CLAUDE_BIN               Path to the claude binary
     ANTIGRAVITY_MCP_HOME    Shared board location (default ~/.antigravity-mcp)
+    ANTIGRAVITY_MCP_HOST_HOME  Where to look for other agents' transcripts/usage (default ~)
+    ANTIGRAVITY_MCP_TOOLS   full (default) or compact — compact collapses the per-backend
+                            task_status/wait/followup/cancel tools into one generic set,
+                            roughly a third fewer tokens of tool schema per session
 `;
 
 function openInBrowser(url) {
@@ -123,9 +127,16 @@ function openInBrowser(url) {
   child.unref();
 }
 
+/**
+ * Bare arguments, with flag *values* skipped over.
+ *
+ * Every flag that takes a value has to be listed here. One that isn't gets its
+ * value read as a positional -- `delegate --prompt "build the thing"` was
+ * handing "build the thing" back as the backend name.
+ */
 function positionalArgs(startIndex = 1) {
   const flagsWithValue = new Set([
-    "--note", "--claim", "--cwd", "--title", "--owner",
+    "--note", "--claim", "--cwd", "--title", "--owner", "--prompt", "--body",
     "--model", "--effort", "--timeout", "--limit", "--only", "--port", "--path"
   ]);
   const out = [];
@@ -158,12 +169,10 @@ async function main() {
     }
     case "tasks":
     case "board": {
-      const owner = valueOf("--owner");
-      const limit = valueOf("--limit");
       process.exitCode = printTasks({
         all: has("--all"),
-        owner,
-        limit: limit ? Number(limit) : 25,
+        owner: valueOf("--owner"),
+        limit: valueOf("--limit"),
         json: has("--json"),
       });
       return;
@@ -232,10 +241,10 @@ async function main() {
     }
     case "inbox":
     case "notes": {
-      process.exitCode = readNotesFromCli({
+      process.exitCode = await readNotesFromCli({
         unreadOnly: has("--unread"),
         markRead: has("--mark-read"),
-        limit: valueOf("--limit") ? Number(valueOf("--limit")) : 20,
+        limit: valueOf("--limit"),
         json: has("--json"),
       });
       return;

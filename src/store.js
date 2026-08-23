@@ -17,6 +17,20 @@ import os from "node:os";
 
 export const HOME = os.homedir();
 
+/**
+ * Home directory for reading OTHER agents' files -- Claude's session
+ * transcripts, its cached usage standing, Antigravity's brain logs.
+ *
+ * Separate from HOME so a test (or a sandboxed run) can point host inspection
+ * somewhere harmless. Without it, behaviour depends on whatever the developer
+ * happens to be running at the time, which is not something a test can pin
+ * down. ANTIGRAVITY_MCP_HOME is this server's own state; this is everyone
+ * else's.
+ */
+export function hostHome() {
+  return process.env.ANTIGRAVITY_MCP_HOST_HOME || HOME;
+}
+
 export function stateDir() {
   return process.env.ANTIGRAVITY_MCP_HOME
     ? path.resolve(process.env.ANTIGRAVITY_MCP_HOME)
@@ -98,43 +112,61 @@ function release() {
   }
 }
 
+const READ_ATTEMPTS = 3;
+/** Windows can briefly refuse a read that lands mid-rename; back off this long between tries. */
+const READ_RETRY_MS = 15;
+
+/** Block the thread briefly. Sync on purpose -- read() is sync for every caller. */
+function pause(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* SharedArrayBuffer unavailable: skip the backoff and just retry */
+  }
+}
+
 export function read() {
   const file = boardPath();
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastParseError = null;
+
+  for (let attempt = 0; attempt < READ_ATTEMPTS; attempt++) {
+    const isLast = attempt === READ_ATTEMPTS - 1;
     let raw;
     try {
       raw = fs.readFileSync(file, "utf8");
     } catch (err) {
-      if (err.code === "ENOENT") return structuredClone(EMPTY);
-      // Windows NTFS may momentarily return EBUSY/EPERM/EACCES during atomic rename
-      if (attempt < 2 && (err.code === "EBUSY" || err.code === "EPERM" || err.code === "EACCES")) {
-        try {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
-        } catch {}
+      if (err.code === "ENOENT") return structuredClone(EMPTY); // no board yet: an empty one is the right answer
+      // Windows NTFS momentarily returns EBUSY/EPERM/EACCES while an atomic
+      // rename lands. That's a transient miss, not an absent board.
+      if (!isLast && (err.code === "EBUSY" || err.code === "EPERM" || err.code === "EACCES")) {
+        pause(READ_RETRY_MS);
         continue;
       }
       return structuredClone(EMPTY);
     }
+
     try {
       return { ...structuredClone(EMPTY), ...JSON.parse(raw) };
     } catch (e) {
-      // If read occurred mid-flush/rename and yielded empty string or partial JSON, retry before throwing
-      if (attempt < 2 && (!raw.trim() || e instanceof SyntaxError)) {
-        try {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
-        } catch {}
+      lastParseError = e;
+      // Same story on the parse side: a read that caught the file mid-flush
+      // yields an empty or truncated string. Retry before concluding the
+      // board is genuinely corrupt.
+      if (!isLast) {
+        pause(READ_RETRY_MS);
         continue;
       }
-      // A board that exists but won't parse is NOT the same as no board. Falling
-      // back to empty here would hand mutate() a blank board to write straight
-      // over the real one -- silently destroying every task, lock and note
-      // instead of reporting the problem. Refuse instead, and say where it is.
-      throw new Error(
-        `board at ${file} is not valid JSON (${e.message}). ` +
-          `Run \`antigravity-mcp-server reset --yes\` or move/delete that file to start clean -- refusing to overwrite it.`
-      );
     }
   }
+
+  // A board that exists but won't parse is NOT the same as no board. Falling
+  // back to empty here would hand mutate() a blank board to write straight
+  // over the real one -- silently destroying every task, lock and note
+  // instead of reporting the problem. Refuse instead, and say where it is.
+  throw new Error(
+    `board at ${file} is not valid JSON (${lastParseError?.message}). ` +
+      `Run \`antigravity-mcp-server reset --yes\` or move/delete that file to start clean -- refusing to overwrite it.`
+  );
 }
 
 /**

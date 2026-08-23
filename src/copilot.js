@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { HOME, runsDir } from "./store.js";
-import { WIN, findBinary } from "./proc.js";
+import { WIN, findBinary, standardCandidates } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
 
@@ -17,14 +17,13 @@ export function findCopilot({ required = true } = {}) {
     label: "GitHub Copilot CLI (copilot)",
     required,
     candidates: [
+      // winget puts it somewhere nothing else would guess; then the standard set.
       WIN &&
         path.join(
           HOME, "AppData", "Local", "Microsoft", "WinGet", "Packages",
           "GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe", "copilot.exe"
         ),
-      path.join(HOME, ".local", "bin", WIN ? "copilot.exe" : "copilot"),
-      "/usr/local/bin/copilot",
-      "/opt/homebrew/bin/copilot",
+      ...standardCandidates("copilot"),
     ].filter(Boolean),
   });
   return found ? (cached = found) : null;

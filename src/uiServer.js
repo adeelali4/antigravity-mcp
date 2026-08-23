@@ -10,13 +10,40 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { read } from "./store.js";
+import { read, stateDir, ensureDirs } from "./store.js";
 import { computeAgents, diffAgents, toEvents } from "./ui/bridgeState.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIST = path.join(HERE, "..", "ui-dist");
 export const DEFAULT_UI_PORT = 49321;
 const POLL_MS = 1000;
+
+/**
+ * Where a running UI server records its pid, so `restart` can stop exactly
+ * this server rather than inferring one from whatever holds the port.
+ */
+export function uiPidPath() {
+  return path.join(stateDir(), "ui.pid");
+}
+
+export function readUiPid() {
+  try {
+    const pid = Number(fs.readFileSync(uiPidPath(), "utf8").trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearUiPid(pid) {
+  // Only remove the file if it still names us -- a newer server may have
+  // claimed it in the meantime, and blowing that away would orphan it.
+  try {
+    if (readUiPid() === pid) fs.rmSync(uiPidPath(), { force: true });
+  } catch {
+    /* best effort */
+  }
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -114,12 +141,21 @@ export function startUiServer({ port = DEFAULT_UI_PORT } = {}) {
   server.on("close", () => {
     clearInterval(timer);
     wss.close();
+    clearUiPid(process.pid);
   });
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, () => {
       server.off("error", reject);
+      try {
+        ensureDirs();
+        fs.writeFileSync(uiPidPath(), String(process.pid));
+        process.once("exit", () => clearUiPid(process.pid));
+      } catch {
+        // A missing pid file only costs `restart` its precise target; it
+        // still falls back to the port scan. Not worth failing startup over.
+      }
       resolve(server);
     });
   });

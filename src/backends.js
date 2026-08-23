@@ -23,7 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { HOME, runsDir, ensureDirs, stateDir } from "./store.js";
-import { WIN, findBinary } from "./proc.js";
+import { findBinary, launchSpec, standardCandidates } from "./proc.js";
 import { readResult as readAgyResult, readStderr as readAgyStderr, findAgy } from "./agy.js";
 import { readResult as readCopilotResult, findCopilot } from "./copilot.js";
 import { readResult as readClaudeResult, findClaude } from "./claude.js";
@@ -31,8 +31,6 @@ import { readResult as readClaudeResult, findClaude } from "./claude.js";
 export const outPath = (id) => path.join(runsDir(), `${id}.json`);
 export const errPath = (id) => path.join(runsDir(), `${id}.err`);
 export const promptPath = (id) => path.join(runsDir(), `${id}.prompt.txt`);
-
-const exe = (name) => (WIN ? `${name}.exe` : name);
 
 /**
  * Separates the caller's actual task from the wrapper briefingFor() puts
@@ -119,7 +117,7 @@ const BUILTIN = [
     id: "codex", label: "Codex", owner: "codex-agent", verified: false,
     bin: {
       envVar: "CODEX_BIN", name: "codex",
-      candidates: [path.join(HOME, ".local", "bin", exe("codex")), "/usr/local/bin/codex", "/opt/homebrew/bin/codex"],
+      candidates: standardCandidates("codex"),
     },
     modelHint: "e.g. gpt-5.4-codex",
     build: ({ prompt, cwd, model, autoApprove, resume }) => {
@@ -138,7 +136,7 @@ const BUILTIN = [
     id: "cursor", label: "Cursor", owner: "cursor-agent", verified: false,
     bin: {
       envVar: "CURSOR_AGENT_BIN", name: "cursor-agent",
-      candidates: [path.join(HOME, ".local", "bin", exe("cursor-agent")), "/usr/local/bin/cursor-agent", "/opt/homebrew/bin/cursor-agent"],
+      candidates: standardCandidates("cursor-agent"),
     },
     build: ({ prompt, model, autoApprove, resume }) => {
       const args = ["-p", prompt, "--output-format", "json"];
@@ -156,7 +154,7 @@ const BUILTIN = [
     id: "gemini", label: "Gemini", owner: "gemini-agent", verified: false, resume: false,
     bin: {
       envVar: "GEMINI_BIN", name: "gemini",
-      candidates: [path.join(HOME, ".local", "bin", exe("gemini")), "/usr/local/bin/gemini", "/opt/homebrew/bin/gemini"],
+      candidates: standardCandidates("gemini"),
     },
     build: ({ prompt, cwd, model, addDirs, autoApprove }) => {
       const args = ["-p", prompt, "-o", "json"];
@@ -173,7 +171,7 @@ const BUILTIN = [
     id: "opencode", label: "OpenCode", owner: "opencode-agent", verified: false,
     bin: {
       envVar: "OPENCODE_BIN", name: "opencode",
-      candidates: [path.join(HOME, ".local", "bin", exe("opencode")), "/usr/local/bin/opencode", "/opt/homebrew/bin/opencode"],
+      candidates: standardCandidates("opencode"),
     },
     modelHint: "provider/model, e.g. anthropic/claude-sonnet-5",
     build: ({ prompt, cwd, model, autoApprove, resume }) => {
@@ -352,13 +350,13 @@ export function spawnBackend(spec, id, prompt, opts = {}) {
   fs.writeFileSync(promptPath(id), prompt);
   const out = fs.openSync(outPath(id), "w");
   const err = fs.openSync(errPath(id), "w");
-  const bin = spec.findBin();
-  const child = spawn(bin, args, {
+  const launch = launchSpec(spec.findBin(), args);
+  const child = spawn(launch.file, launch.args, {
     cwd: opts.cwd,
     detached: true,
     windowsHide: true,
     stdio: ["ignore", out, err],
-    shell: WIN && /\.(cmd|bat)$/i.test(bin),
+    ...launch.options,
   });
   // Detached and unref'd, so nothing else observes this child -- without a
   // listener a post-spawn failure emits an unhandled 'error' that kills this

@@ -134,6 +134,65 @@ const ok = (obj) => ({
 });
 
 /**
+ * The presence vocabulary. Kept as a closed set on purpose: the UI gives each
+ * one a sprite, badge and screen colour (ui/src/types.ts KNOWN_STATUSES), and
+ * an open string field just produces near-misses ("Working", "in progress")
+ * that all render as the generic fallback. Keep the two lists in step.
+ */
+const PRESENCE_STATUSES = [
+  "idle", "finding", "reading", "bashing", "searching", "developing",
+  "working", "delegating", "testing", "reviewing", "debugging", "blocked", "offline",
+];
+
+/** A heartbeat any more often than this is just lock contention on the board. */
+const PRESENCE_TOUCH_MS = 5_000;
+let lastPresenceTouch = 0;
+
+/**
+ * Refresh this agent's liveness fields in place.
+ *
+ * Deliberately does NOT touch `status` or `detail`. Those belong to
+ * presence_set: an agent that reported "blocked, waiting on an API key" is
+ * telling the board something no tool call can infer, and overwriting it with
+ * "reading" because it happened to list the board turns a real signal into
+ * noise. The UI derives activity from the event log instead.
+ */
+function stampPresence(b) {
+  const existing = b.presence[AGENT];
+  // pid/cwd are this process's own, always current. Everything else is
+  // whatever was last self-reported and is carried forward by the spread --
+  // this replaces the whole record, so a field dropped here vanishes.
+  b.presence[AGENT] = {
+    status: "idle",
+    detail: "",
+    model: null,
+    ...existing,
+    pid: process.pid,
+    cwd: process.cwd(),
+    ts: Date.now(),
+  };
+}
+
+/**
+ * Stamp the heartbeat, at most once per PRESENCE_TOUCH_MS.
+ *
+ * Throttled because tool calls are the highest-frequency thing in the system
+ * and every board write takes the exclusive lock: heartbeating on each one
+ * made plain reads contend with real work. Never throws -- a missed beat is
+ * not worth failing a tool call, or crashing the background interval, over.
+ */
+async function touchPresence() {
+  const now = Date.now();
+  if (now - lastPresenceTouch < PRESENCE_TOUCH_MS) return;
+  lastPresenceTouch = now;
+  try {
+    await mutate(stampPresence);
+  } catch {
+    /* e.g. the board lock timed out; the next beat will do */
+  }
+}
+
+/**
  * Drop every lock tied to a finished task and log it, if any were held.
  * Delegated agents are told to release_paths themselves when done, but that
  * depends on them remembering to -- in practice they sometimes don't (a
@@ -198,6 +257,64 @@ function activeLimits(b) {
 }
 
 /**
+ * Move a task that died on a usage limit onto a backend that can still run it.
+ *
+ * This is the whole point of detecting limits at all. The alternative -- hand
+ * the caller a "failed (rate limited)" and let it decide -- costs a round trip
+ * and, far worse, tempts the model into re-writing a brief it already paid for.
+ * The brief is replayed byte-for-byte from runs/<id>.prompt.txt, so failing
+ * over costs zero tokens.
+ *
+ * Returns the annotated task; the original is left `failed` with a pointer to
+ * its replacement, so the history of what was tried stays readable.
+ */
+async function autoReassign(task) {
+  if (!task?.limit || task.reassignedTo) return task;
+
+  const tried = [...(task.triedOwners || []), task.owner];
+  if (tried.length >= MAX_FAILOVER_HOPS) return task;
+
+  const brief = recoverTask(task.id);
+  if (!brief) return task; // nothing on disk to replay; caller re-delegates by hand
+
+  const alt = pickFailover(read(), tried);
+  if (!alt) return task;
+
+  const newId = taskId();
+  const cwd = task.cwd || process.cwd();
+  const claim = (task.claim || []).map(norm);
+  const result = await delegateTask({
+    owner: alt.owner, toolPrefix: alt.prefix, specId: alt.id, id: newId, cwd, claim,
+    title: task.title, prompt: brief,
+    briefing: briefingFor(alt.owner, cwd, claim, brief),
+    findBin: alt.findBin,
+    spawn: (tid, b, extra) => spawnBackend(alt, tid, b, extra),
+    spawnExtra: { addDirs: [], autoApprove: true },
+    triedOwners: tried,
+  });
+  if (result.error) return task;
+
+  return await mutate((b) => {
+    const from = b.tasks.find((x) => x.id === task.id);
+    const to = b.tasks.find((x) => x.id === newId);
+    if (from) from.reassignedTo = newId;
+    if (to) {
+      to.reassignedFrom = task.id;
+      // Carried forward so the next failure knows what has already been tried
+      // and can't bounce the work back onto a backend that just refused it.
+      to.triedOwners = tried;
+    }
+    logEvent(b, AGENT, "task.failover", `${task.id} (${task.owner} limited) -> ${newId} (${alt.prefix})`);
+    return {
+      ...from,
+      auto_reassigned_to: newId,
+      backend: alt.prefix,
+      next: `${task.owner} hit its limit, so this was moved to ${alt.prefix} automatically. Check ${alt.prefix}_task_status("${newId}").`,
+    };
+  });
+}
+
+/**
  * Reconcile a delegated task with what its backend actually left on disk.
  * Called before any read of task state, which is what makes status survive a
  * server restart.
@@ -211,7 +328,7 @@ async function reap(id) {
   const backend = backendFor(t.owner);
   const payload = backend?.readResult(id);
   if (payload) {
-    return await mutate((b) => {
+    const settled = await mutate((b) => {
       const task = b.tasks.find((x) => x.id === id);
       // The board is re-read under the lock, so the task can legitimately be
       // gone by now -- a `reset` or coop_reset between our read and this
@@ -237,10 +354,13 @@ async function reap(id) {
       logEvent(b, AGENT, `task.${task.status}`, `${id} ${task.title}`);
       return task;
     });
+    // Failover happens outside the mutate above: it spawns a process, and
+    // holding the board lock across a spawn would block every other agent.
+    return settled.limit ? await autoReassign(settled) : settled;
   }
 
   if (!isAlive(t.pid)) {
-    return await mutate((b) => {
+    const crashed = await mutate((b) => {
       const task = b.tasks.find((x) => x.id === id);
       if (!task) return { error: `no such task: ${id}` };
       task.status = "failed";
@@ -260,6 +380,7 @@ async function reap(id) {
       logEvent(b, AGENT, "task.failed", `${id} ${task.title}`);
       return task;
     });
+    return crashed.limit ? await autoReassign(crashed) : crashed;
   }
   return t;
 }
@@ -314,10 +435,51 @@ function previewResult(text) {
 }
 
 /**
+ * How many backends one piece of work may be bounced across before it stops.
+ *
+ * Failover exists so a usage limit doesn't strand a task, not so a genuinely
+ * broken brief can tour every CLI on the machine burning quota. Three attempts
+ * is enough to get past one or two exhausted providers; past that, something
+ * other than capacity is wrong and a human should look.
+ */
+const MAX_FAILOVER_HOPS = 3;
+
+/** Is this backend able to take work right now? */
+function backendAvailable(spec, limited) {
+  if (limited[spec.owner]) return false;
+  if (isExhausted(localUsage(spec.id))) return false;
+  try {
+    return Boolean(spec.findBin({ required: false }));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The next backend that can actually run this work.
+ *
+ * `verified` first: those are the lanes this project has round-tripped a real
+ * task through, so they are the safer bet when the caller's chosen backend has
+ * already fallen over. Everything already tried is excluded, which is what
+ * stops a limited provider being handed the same task twice.
+ */
+export function pickFailover(board, exclude = []) {
+  const limited = activeLimits(board);
+  const skip = new Set(exclude);
+  const usable = BACKENDS_LIST.filter(
+    (spec) => !skip.has(spec.owner) && !skip.has(spec.prefix) && backendAvailable(spec, limited)
+  );
+  return usable.find((s) => s.verified) || usable[0] || null;
+}
+
+/**
  * Shared core of every `*_delegate` tool: validate cwd + bin, check for path
  * conflicts, spawn, and record the task + locks + presence on the board.
  */
-async function delegateTask({ owner, toolPrefix, specId, id, briefing, cwd, spawnExtra, claim, findBin, spawn, title, prompt }) {
+async function delegateTask({
+  owner, toolPrefix, specId, id, briefing, cwd, spawnExtra, claim, findBin, spawn, title, prompt,
+  failover = true, triedOwners = [],
+}) {
   if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
     return { error: `cwd is not a directory: ${cwd}` };
   }
@@ -333,24 +495,46 @@ async function delegateTask({ owner, toolPrefix, specId, id, briefing, cwd, spaw
   // task, and usually a retry -- all of it avoidable from information already
   // on hand. `alternatives` matters as much as the refusal: the point is to
   // send the work somewhere that can take it, not just to say no.
-  const limited = activeLimits(read())[owner];
+  const board = read();
+  const limited = activeLimits(board)[owner];
   const usage = specId ? localUsage(specId) : null;
   const spent = isExhausted(usage) ? usage : null;
   if (limited || spent) {
     const info = limited || { kind: "limit", resets_at: spent.resets_at, detail: `${spent.percent}% of its ${spent.window || "usage"} limit` };
     const eta = untilReset(info.resets_at);
+    const tried = [...triedOwners, owner];
+
+    // Reroute rather than refuse. The caller named a backend, but what it
+    // actually wants is the work done -- and it has no cheaper way to find out
+    // which other lane is free than asking here, where the answer is already
+    // known. Handing the error back instead costs a whole extra round trip
+    // just to re-send a brief this process is already holding.
+    const alt = failover && tried.length < MAX_FAILOVER_HOPS ? pickFailover(board, tried) : null;
+    if (alt) {
+      const out = await delegateTask({
+        owner: alt.owner, toolPrefix: alt.prefix, specId: alt.id, id, cwd, claim, title, prompt,
+        briefing: briefingFor(alt.owner, cwd, claim, prompt),
+        findBin: alt.findBin,
+        spawn: (tid, brief, extra) => spawnBackend(alt, tid, brief, extra),
+        // model was chosen for the ORIGINAL backend and rarely names anything
+        // the replacement understands, so it is dropped rather than passed on.
+        spawnExtra: { ...spawnExtra, model: undefined },
+        failover, triedOwners: tried,
+      });
+      if (!out.error) {
+        await mutate((b) => logEvent(b, AGENT, "task.failover", `${owner} unavailable -> ${alt.prefix} (${id})`));
+        return { ...out, backend: alt.prefix, rerouted_from: toolPrefix, reason: `${owner} ${info.kind === "auth" ? "cannot sign in" : "is at its usage limit"}` };
+      }
+    }
+
     return {
       error: `${owner} is unavailable (${info.kind === "auth" ? "sign-in/access problem" : "at its usage limit"})`,
       detail: info.detail || undefined,
-      resets_at: info.resets_at || undefined,
       resets_in: eta || undefined,
-      alternatives: BACKENDS_LIST.map((s) => s.prefix).filter((p) => p !== toolPrefix),
-      next: eta
-        ? `Delegate to one of the alternatives, or retry in ${eta}. Don't re-delegate here until then.`
-        : "Delegate to one of the alternatives instead of retrying this one.",
-      // Only relevant to work that already exists, so it's mentioned rather
-      // than assumed: a brand-new delegation has nothing to reassign.
-      moving_existing_work: "task_reassign(task_id, to) replays a failed task's brief elsewhere without resending it",
+      // Only listed when nothing could be rerouted to -- otherwise the reroute
+      // already happened and naming alternatives is dead weight in the reply.
+      alternatives: BACKENDS_LIST.map((x) => x.prefix).filter((x) => !tried.includes(x)),
+      next: eta ? `Every other backend is busy or limited too. Retry in ${eta}.` : "No other backend can take this right now.",
     };
   }
 
@@ -521,6 +705,26 @@ async function cancelTask(task_id) {
  * can't drift out of sync the way they had started to (agy/claude/copilot's
  * conversation_id wording had already diverged before this refactor).
  */
+/**
+ * How many delegation tools to register.
+ *
+ * "full" (default) gives every backend its own five: ag_delegate,
+ * ag_task_status, ag_task_wait, ag_followup, ag_cancel, and the same again for
+ * copilot, claude, codex and the rest. Explicit, and what existing setups name.
+ *
+ * The catch is that four of those five are pure duplication -- a task_id
+ * already says which backend owns it, so ag_task_status and claude_task_status
+ * do exactly the same lookup. On a machine with five CLIs installed that is 20
+ * near-identical tool definitions, and every one is re-sent to the model on
+ * every session. "compact" keeps the per-backend *_delegate tools (which do
+ * differ -- different flags, different models) and collapses the follow-ons
+ * into one generic set, roughly halving the schema the model has to carry.
+ *
+ * Opt-in rather than the default, because switching renames tools that
+ * existing prompts and instructions already reference.
+ */
+const TOOL_MODE = process.env.ANTIGRAVITY_MCP_TOOLS === "compact" ? "compact" : "full";
+
 function registerDelegationTools(server, spec) {
   const toolPrefix = spec.prefix;
   const label = spec.label;
@@ -531,18 +735,20 @@ function registerDelegationTools(server, spec) {
     {
       title: `Delegate a task to ${label}`,
       description:
-        `Delegate to ${label}. Starts it detached and returns a task_id immediately. ` +
-        `Prompt must be a self-contained brief: goal, stack/conventions, files owned, what NOT to touch, ` +
-        `and the contract -- it cannot see your conversation. Use claim to reserve paths; auto_approve ` +
-        `enables unattended edits.` + (spec.note ? ` Note: ${spec.note}` : ""),
+        `Delegate to ${label}: starts detached, returns a task_id at once. ${label} starts cold and ` +
+        `cannot see your conversation, so prompt must be a self-contained brief -- goal, stack and ` +
+        `conventions, files it owns, what not to touch, and the contract. claim reserves paths. ` +
+        `If ${label} is out of quota the work reroutes to another installed CLI automatically and the ` +
+        `reply names it; never re-send the brief.` + (spec.note ? ` Note: ${spec.note}` : ""),
       inputSchema: {
-        title: z.string().describe("Short label for the board"),
-        prompt: z.string().describe(`Self-contained brief; ${label} starts cold`),
-        cwd: z.string().describe("Absolute path to the project root"),
+        title: z.string().describe("Short board label"),
+        prompt: z.string().describe("Self-contained brief"),
+        cwd: z.string().describe("Absolute project root"),
         model: z.string().optional().describe(spec.modelHint || "Model override"),
         add_dirs: z.array(z.string()).optional(),
-        claim: z.array(z.string()).optional().describe(`Paths ${label} will own`),
+        claim: z.array(z.string()).optional().describe("Paths it will own"),
         auto_approve: z.boolean().optional(),
+        failover: z.boolean().optional().describe("Default true; false = fail instead of rerouting"),
         // Only offered where the CLI actually has the flag -- advertising an
         // option the backend ignores is worse than not offering it.
         ...(spec.id === "ag" && {
@@ -570,10 +776,15 @@ function registerDelegationTools(server, spec) {
             addDirs: a.add_dirs || [], autoApprove: a.auto_approve ?? true,
             timeoutSeconds: a.timeout_seconds,
           },
+          failover: a.failover ?? true,
         })
       );
     }
   );
+
+  // In compact mode the four follow-on tools below are registered once,
+  // generically, by registerGenericTaskTools() instead of once per backend.
+  if (TOOL_MODE === "compact") return;
 
   if (spec.resume) {
     server.registerTool(
@@ -581,9 +792,8 @@ function registerDelegationTools(server, spec) {
       {
         title: `Follow up in the same ${label} session`,
         description:
-          `Send a follow-up into the SAME ${label} session as a finished task, so it keeps its ` +
-          `context (e.g. 'now make the header responsive'). Use this rather than a fresh ` +
-          `${toolPrefix}_delegate whenever the request builds on work it just did.`,
+          `Follow up in the SAME ${label} session as a finished task, keeping its context. ` +
+          `Use instead of ${toolPrefix}_delegate whenever the request builds on work it just did.`,
         inputSchema: { task_id: z.string(), prompt: z.string() },
       },
       async ({ task_id, prompt }) =>
@@ -612,9 +822,8 @@ function registerDelegationTools(server, spec) {
     {
       title: `Check a delegated ${label} task`,
       description:
-        `Check a delegated ${label} task: running / done / failed, plus its final ` +
-        `response and conversation_id${idNote} once finished. By default a long response ` +
-        `comes back as a head/tail preview, not the whole thing -- pass output_mode:"full" for everything.`,
+        `Status of a delegated ${label} task, plus its response and conversation_id${idNote} once ` +
+        `done. Long responses come back as a head/tail preview; output_mode:"full" for all of it.`,
       inputSchema: {
         task_id: z.string(),
         include_output: z.boolean().optional(),
@@ -631,10 +840,9 @@ function registerDelegationTools(server, spec) {
     {
       title: `Wait for a delegated ${label} task`,
       description:
-        `Block until a delegated ${label} task finishes, or until timeout. Prefer ` +
-        `${toolPrefix}_task_status and doing your own work in between -- only wait when you ` +
-        `genuinely cannot proceed without ${label}'s result. Waiting costs nothing while blocked, ` +
-        `so the default timeout is generous -- raise it further rather than re-polling in a loop.`,
+        `Block until a delegated ${label} task finishes. Prefer ${toolPrefix}_task_status and ` +
+        `doing your own work meanwhile; only wait when blocked on its result. Raise timeout_seconds ` +
+        `rather than re-polling in a loop.`,
       inputSchema: {
         task_id: z.string(),
         timeout_seconds: z.number().int().optional(),
@@ -668,6 +876,109 @@ function registerDelegationTools(server, spec) {
   );
 }
 
+
+/**
+ * Backend-agnostic versions of the follow-on tools, for compact mode.
+ *
+ * Everything they need is already on the board: a task records its owner, so
+ * the backend is looked up rather than named by the caller.
+ */
+function registerGenericTaskTools(server) {
+  const specFor = (task) => (task?.owner ? backendFor(task.owner) : null);
+
+  const trim = (t, { include_output, include_usage_detail, output_mode }) => {
+    if (!t || t.error) return t;
+    if (!include_output) delete t.result;
+    else if (output_mode !== "full" && typeof t.result === "string") t.result = previewResult(t.result);
+    if (!include_usage_detail && t.usage) t.usage = summarizeUsage(t.usage);
+    return t;
+  };
+
+  server.registerTool(
+    "task_status",
+    {
+      title: "Check a delegated task",
+      description:
+        "Status of any delegated task, whichever CLI is running it, plus its response and " +
+        "conversation id once done. Long responses come back as a head/tail preview; " +
+        'output_mode:"full" for all of it.',
+      inputSchema: {
+        task_id: z.string(),
+        include_output: z.boolean().optional(),
+        include_usage_detail: z.boolean().optional(),
+        output_mode: z.enum(["preview", "full"]).optional(),
+      },
+    },
+    async ({ task_id, include_output = true, include_usage_detail = false, output_mode = "preview" }) =>
+      ok(trim(slim(await reap(task_id)), { include_output, include_usage_detail, output_mode }))
+  );
+
+  server.registerTool(
+    "task_wait",
+    {
+      title: "Wait for a delegated task",
+      description:
+        "Block until a delegated task finishes. Prefer task_status and doing your own work " +
+        "meanwhile; only wait when blocked on its result. Raise timeout_seconds rather than " +
+        "re-polling in a loop.",
+      inputSchema: {
+        task_id: z.string(),
+        timeout_seconds: z.number().int().optional(),
+        include_usage_detail: z.boolean().optional(),
+        output_mode: z.enum(["preview", "full"]).optional(),
+      },
+    },
+    async ({ task_id, timeout_seconds = 300, include_usage_detail = false, output_mode = "preview" }) => {
+      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
+      for (;;) {
+        const t = await reap(task_id);
+        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) {
+          return ok(trim(slim(t), { include_output: true, include_usage_detail, output_mode }));
+        }
+        if (Date.now() >= deadline) {
+          return ok({ ...slim(t), timed_out_waiting: true, note: "Still running. Call task_status later." });
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  );
+
+  server.registerTool(
+    "task_followup",
+    {
+      title: "Follow up in the same session",
+      description:
+        "Send a follow-up into the SAME session as a finished task so it keeps its context. " +
+        "Use instead of a fresh delegate whenever the request builds on work it just did.",
+      inputSchema: { task_id: z.string(), prompt: z.string() },
+    },
+    async ({ task_id, prompt }) => {
+      const task = read().tasks.find((t) => t.id === task_id);
+      if (!task) return ok({ error: `no such task: ${task_id}` });
+      const spec = specFor(task);
+      if (!spec) return ok({ error: `no installed backend for ${task.owner}` });
+      if (spec.resume === false) return ok({ error: `${spec.label} cannot resume a specific session` });
+      return ok(
+        await followupTask({
+          owner: spec.owner, task_id, prompt,
+          spawn: (tid, p, extra) => spawnBackend(spec, tid, p, extra),
+          buildExtra: (conversationId) => ({ resume: conversationId }),
+        })
+      );
+    }
+  );
+
+  server.registerTool(
+    "task_cancel",
+    {
+      title: "Cancel a delegated task",
+      description: "Stop a running delegated task and release any paths it held.",
+      inputSchema: { task_id: z.string() },
+    },
+    async ({ task_id }) => ok(await cancelTask(task_id))
+  );
+}
+
 export async function buildServer() {
   ensureDirs();
   await resolveAgentIdentity();
@@ -675,31 +986,11 @@ export async function buildServer() {
   // Heartbeat: MCP gives no onDisconnect hook, so a live consumer (e.g. a UI
   // bridge watching the board) has no way to tell "connected but idle" apart
   // from "process exited without a clean disconnect" -- recency of this
-  // timestamp is the signal. Touches presence on startup and every 15s.
-  const touchPresence = async () => {
-    try {
-      await mutate((b) => {
-        const existing = b.presence[AGENT];
-        // pid/cwd are this process's own, always current; model/status/detail
-        // are whatever was last self-reported -- carried forward explicitly
-        // since this replaces the whole record every 15s, and a field this
-        // loop doesn't know about would otherwise quietly vanish next beat.
-        b.presence[AGENT] = {
-          status: existing?.status ?? "idle",
-          detail: existing?.detail ?? "",
-          model: existing?.model ?? null,
-          pid: process.pid,
-          cwd: process.cwd(),
-          ts: Date.now(),
-        };
-      });
-    } catch (e) {
-      // Background heartbeat shouldn't crash the server if it fails (e.g. if the lock times out).
-    }
-  };
+  // timestamp is the signal. Touches presence on startup and every 15s, well
+  // clear of touchPresence's own throttle.
   touchPresence();
-  const heartbeat = setInterval(touchPresence, 15000);
-  if (typeof heartbeat.unref === "function") heartbeat.unref();
+  const presenceTimer = setInterval(touchPresence, 15000);
+  if (typeof presenceTimer.unref === "function") presenceTimer.unref();
 
   const server = new McpServer(
     { name: "antigravity", version: "0.1.0" },
@@ -847,16 +1138,16 @@ export async function buildServer() {
   for (const spec of BACKENDS_LIST) {
     registerDelegationTools(server, spec);
   }
+  if (TOOL_MODE === "compact") registerGenericTaskTools(server);
 
   server.registerTool(
     "task_reassign",
     {
       title: "Send a failed task to a different backend",
       description:
-        "Re-run a finished-or-failed task's ORIGINAL brief on a different backend -- the usual answer " +
-        "when one hits its usage limit. The brief is replayed from disk, so you do not resend it and " +
-        "pay no tokens for it. Keeps the same project directory and re-reserves the same paths. " +
-        "Use this instead of writing the delegation again from memory.",
+        "Re-run a finished-or-failed task's ORIGINAL brief on a different backend, replayed from " +
+        "disk at no token cost, keeping its project directory and paths. Usage limits already " +
+        "reroute on their own -- use this to move work for any other reason.",
       inputSchema: {
         task_id: z.string().describe("The task that failed"),
         to: z.string().describe("Backend prefix to run it on instead, e.g. copilot"),
@@ -994,17 +1285,7 @@ export async function buildServer() {
       },
     },
     async ({ owner, include_done = false, limit = 20 }) => {
-      await mutate((b) => {
-        const existing = b.presence[AGENT];
-        b.presence[AGENT] = {
-          ...existing,
-          status: "reading",
-          detail: "Checking task board",
-          pid: process.pid,
-          cwd: process.cwd(),
-          ts: Date.now(),
-        };
-      });
+      await touchPresence();
       let items = read().tasks;
       if (owner) items = items.filter((t) => t.owner === owner);
       if (!include_done) items = items.filter((t) => !["done", "cancelled", "failed"].includes(t.status));
@@ -1045,16 +1326,15 @@ export async function buildServer() {
             granted.push(p);
           }
         }
-        const existing = b.presence[AGENT];
-        b.presence[AGENT] = {
-          ...existing,
-          status: "developing",
-          detail: granted.length ? `Locked ${granted.map((f) => path.basename(f)).join(", ")}` : existing?.detail || "",
-          pid: process.pid,
-          cwd: process.cwd(),
-          ts: Date.now(),
-        };
-        logEvent(b, AGENT, "locks.claim", `${granted.length} granted, ${conflicts.length} conflicts`);
+        stampPresence(b);
+        logEvent(
+          b,
+          AGENT,
+          "locks.claim",
+          granted.length
+            ? `Locked ${granted.map((f) => path.basename(f)).join(", ")}`
+            : `0 granted, ${conflicts.length} conflicts`
+        );
         return { granted, conflicts };
       });
       return ok({ owner: AGENT, ...out, hint: "Call release_paths when you are done editing." });
@@ -1099,15 +1379,7 @@ export async function buildServer() {
     },
     async ({ paths }) => {
       await mutate((b) => {
-        const existing = b.presence[AGENT];
-        b.presence[AGENT] = {
-          ...existing,
-          status: "finding",
-          detail: `Checking ${paths.map((p) => path.basename(p)).join(", ")}`,
-          pid: process.pid,
-          cwd: process.cwd(),
-          ts: Date.now(),
-        };
+        stampPresence(b);
         logEvent(b, AGENT, "paths.check", paths.map((p) => path.basename(p)).join(", "));
       });
       const locks = read().locks;
@@ -1144,15 +1416,7 @@ export async function buildServer() {
       const id = await mutate((b) => {
         const nid = nextId(b);
         b.notes.push({ id: nid, from: AGENT, to, body, created: Date.now(), readAt: null });
-        const existing = b.presence[AGENT];
-        b.presence[AGENT] = {
-          ...existing,
-          status: "working",
-          detail: `Sent note to ${to}`,
-          pid: process.pid,
-          cwd: process.cwd(),
-          ts: Date.now(),
-        };
+        stampPresence(b);
         logEvent(b, AGENT, "note.sent", `-> ${to}: ${body.slice(0, 80)}`);
         return nid;
       });
@@ -1177,15 +1441,7 @@ export async function buildServer() {
         if (unread_only) got = got.filter((n) => !n.readAt);
         got = got.slice(-Math.max(1, limit));
         if (mark_read) for (const n of got) n.readAt = Date.now();
-        const existing = b.presence[AGENT];
-        b.presence[AGENT] = {
-          ...existing,
-          status: "reading",
-          detail: "Reading inbox notes",
-          pid: process.pid,
-          cwd: process.cwd(),
-          ts: Date.now(),
-        };
+        stampPresence(b);
         logEvent(b, AGENT, "note.read", `${got.length} note(s)`);
         return got.map((n) => ({ id: n.id, from: n.from, body: n.body, when: ago(n.created) }));
       });
@@ -1203,7 +1459,7 @@ export async function buildServer() {
         "start (e.g. \"claude-sonnet-5\") if you know it -- otherwise this identity shows no " +
         "model while idle, since model is normally only known for an active delegated task.",
       inputSchema: {
-        status: z.string().describe("Agent status: finding, reading, bashing, searching, working, developing, testing, reviewing, debugging, blocked, offline, idle, etc."),
+        status: z.enum(PRESENCE_STATUSES).describe("What you are doing right now"),
         detail: z.string().optional(),
         model: z.string().optional(),
       },
@@ -1231,17 +1487,7 @@ export async function buildServer() {
       inputSchema: { limit: z.number().int().optional() },
     },
     async ({ limit = 12 }) => {
-      await mutate((b) => {
-        const existing = b.presence[AGENT];
-        b.presence[AGENT] = {
-          ...existing,
-          status: "reading",
-          detail: "Reading activity timeline",
-          pid: process.pid,
-          cwd: process.cwd(),
-          ts: Date.now(),
-        };
-      });
+      await touchPresence();
       const events = read().events.slice(-Math.max(1, limit)).map((e) => ({
         agent: e.agent, kind: e.kind, detail: e.detail, when: ago(e.ts),
       }));
@@ -1271,33 +1517,67 @@ export async function buildServer() {
   server.registerTool(
     "coop_restart",
     {
-      title: "Restart coordination state",
+      title: "Restart your own coordination state",
       description:
-        "Cleanly restart coordination state: resets presence, releases all held locks, " +
-        "cancels in-flight tasks, and signals connected clients to refresh.",
+        "Clear YOUR stale coordination state: kills the worker processes behind your " +
+        "in-flight delegated tasks, cancels those tasks, releases the locks they and you " +
+        "hold, and drops your presence entry. Other agents' tasks, locks and presence are " +
+        "left alone -- use coop_reset (confirm=true) if you really mean to wipe the board.",
       inputSchema: {
-        reset_board: z.boolean().optional().describe("Pass true to wipe the board completely"),
+        reset_board: z.boolean().optional().describe("Pass true to wipe the WHOLE board, including other agents' state"),
       },
     },
     async ({ reset_board = false }) => {
-      await mutate((b) => {
-        if (reset_board) {
+      if (reset_board) {
+        await mutate((b) => {
           b.tasks = []; b.locks = []; b.notes = []; b.events = []; b.presence = {}; b.limits = {}; b.seq = 0;
           logEvent(b, AGENT, "board.restart", "full wipe via coop_restart");
-        } else {
-          b.presence = {};
-          const releasedCount = (b.locks || []).length;
-          b.locks = [];
-          for (const t of b.tasks || []) {
-            if (t.status === "running" || t.status === "queued") {
-              t.status = "cancelled";
-              t.updated = Date.now();
-            }
-          }
-          logEvent(b, AGENT, "board.restart", `presence reset, ${releasedCount} locks released`);
+        });
+        return ok({ restarted: true, reset_board: true, hint: "Board wiped. Restart active AI sessions to reconnect." });
+      }
+
+      // Everything this agent is responsible for: tasks it delegated, and the
+      // workers running them.
+      const board = read();
+      const mine = (board.tasks || []).filter(
+        (t) => (t.status === "running" || t.status === "queued") && (t.assignedBy === AGENT || t.owner === AGENT)
+      );
+
+      // Kill first, THEN release. Cancelling a task and dropping its locks
+      // while its process is still alive leaves a worker editing files that
+      // nothing holds a claim on -- the exact collision the board prevents.
+      const killedPids = [];
+      for (const t of mine) {
+        if (t.pid && t.pid !== process.pid && isAlive(t.pid)) {
+          killTree(t.pid);
+          killedPids.push(t.pid);
         }
+      }
+
+      const out = await mutate((b) => {
+        const ids = new Set(mine.map((t) => t.id));
+        const owners = new Set([AGENT, ...mine.map((t) => t.owner)]);
+        for (const t of b.tasks || []) {
+          if (!ids.has(t.id)) continue;
+          t.status = "cancelled";
+          t.updated = Date.now();
+        }
+        const before = (b.locks || []).length;
+        b.locks = (b.locks || []).filter((l) => !ids.has(l.taskId) && !owners.has(l.owner));
+        const released = before - b.locks.length;
+        for (const owner of owners) delete b.presence[owner];
+        logEvent(b, AGENT, "board.restart", `${ids.size} task(s) cancelled, ${released} lock(s) released`);
+        return { cancelled: ids.size, released };
       });
-      return ok({ restarted: true, reset_board, hint: "Coordination state refreshed. Restart active AI sessions to reconnect." });
+
+      return ok({
+        restarted: true,
+        reset_board: false,
+        tasks_cancelled: out.cancelled,
+        locks_released: out.released,
+        processes_killed: killedPids.length,
+        hint: "Your coordination state is clear. Other agents were left untouched.",
+      });
     }
   );
 

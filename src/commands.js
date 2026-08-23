@@ -11,6 +11,16 @@ import { classifyFailure, untilReset } from "./limits.js";
 
 const ACTOR = process.env.COOP_AGENT || process.env.USER || process.env.USERNAME || "human";
 
+/**
+ * A count from the command line, or the default. Guards the NaN path: a bad
+ * `--limit abc` reaches Math.max(1, NaN) as NaN, and slice(-NaN) is slice(0),
+ * which quietly returns everything instead of the limit that was asked for.
+ */
+function clampLimit(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
+
 export function printStatus({ json = false } = {}) {
   const b = read();
   if (json) {
@@ -87,7 +97,7 @@ export function printTasks({ all = false, owner = null, limit = 25, json = false
   let tasks = b.tasks || [];
   if (owner) tasks = tasks.filter((t) => t.owner === owner);
   if (!all) tasks = tasks.filter((t) => ["open", "running", "queued", "blocked"].includes(t.status));
-  tasks = tasks.slice(-Math.max(1, limit));
+  tasks = tasks.slice(-clampLimit(limit, 25));
 
   if (json) {
     console.log(JSON.stringify(tasks, null, 2));
@@ -193,19 +203,38 @@ export async function printLogs(taskIdArg, { err = false, prompt = false, raw = 
   if (follow) {
     console.log(`\n=== Following Task ${id} (${path.basename(file)}) — Press Ctrl+C to stop ===\n`);
     let lastSize = 0;
+
+    /**
+     * Write everything appended since the last drain.
+     *
+     * Deliberately not pipe(): pipe calls dest.end() when the source stream
+     * finishes, which closes stdout after the very first chunk and silently
+     * swallows the rest of the follow. `end` is inclusive, so the last byte to
+     * read is size - 1.
+     */
+    const drain = async () => {
+      if (!fs.existsSync(file)) return;
+      const { size } = fs.statSync(file);
+      if (size <= lastSize) return;
+      const start = lastSize;
+      lastSize = size;
+      await new Promise((resolve, reject) => {
+        const stream = fs.createReadStream(file, { start, end: size - 1 });
+        stream.on("data", (chunk) => process.stdout.write(chunk));
+        stream.on("end", resolve);
+        stream.on("error", reject);
+      });
+    };
+
     while (true) {
-      if (fs.existsSync(file)) {
-        const stat = fs.statSync(file);
-        if (stat.size > lastSize) {
-          const stream = fs.createReadStream(file, { start: lastSize, end: stat.size });
-          stream.pipe(process.stdout);
-          lastSize = stat.size;
-        }
-      }
+      await drain();
       const board = read();
       const task = (board.tasks || []).find((t) => t.id === id);
       if (task && ["done", "failed", "cancelled"].includes(task.status)) {
+        // The backend can still be flushing its last write when the board
+        // flips status, so drain once more before signing off.
         await new Promise((r) => setTimeout(r, 500));
+        await drain();
         console.log(`\n\n=== Task ${id} finished with status: ${task.status} ===\n`);
         return 0;
       }
@@ -274,14 +303,22 @@ export async function lockFromCli(pathsArg, { note = "", owner = ACTOR } = {}) {
 }
 
 export async function unlockFromCli({ path: unlockPath, all = false, owner = null } = {}) {
+  if (!all && !unlockPath) {
+    console.error("Usage: antigravity-mcp-server unlock <path> | --all [--owner <agent>]");
+    return 1;
+  }
+
   const released = await mutate((b) => {
     const before = b.locks.length;
-    if (all) {
-      b.locks = owner ? b.locks.filter((l) => l.owner !== owner) : [];
-    } else if (unlockPath) {
-      const target = norm(unlockPath);
-      b.locks = b.locks.filter((l) => l.path !== target && (!owner || l.owner !== owner));
-    }
+    const target = unlockPath ? norm(unlockPath) : null;
+    // `owner` narrows which locks to drop; it is not an independent condition.
+    // Treating it as one made `unlock <path> --owner X` release every lock X
+    // held, not just the one at that path.
+    b.locks = b.locks.filter((l) => {
+      const matchesPath = all || l.path === target;
+      const matchesOwner = !owner || l.owner === owner;
+      return !(matchesPath && matchesOwner);
+    });
     const n = before - b.locks.length;
     logEvent(b, ACTOR, "locks.release", `${n} released via CLI`);
     return n;
@@ -398,11 +435,31 @@ export async function sendNoteFromCli(to, body) {
   return 0;
 }
 
-export function readNotesFromCli({ unreadOnly = false, markRead = false, limit = 20, json = false } = {}) {
-  const b = read();
-  let notes = b.notes || [];
-  if (unreadOnly) notes = notes.filter((n) => !n.readAt);
-  notes = notes.slice(-Math.max(1, limit));
+export async function readNotesFromCli({ unreadOnly = false, markRead = false, limit = 20, json = false } = {}) {
+  const take = clampLimit(limit, 20);
+  // Marking read is a write, so it can't ride on read(). Both paths select the
+  // same slice; only the write path takes the board lock.
+  const select = (b) => {
+    let got = b.notes || [];
+    if (unreadOnly) got = got.filter((n) => !n.readAt);
+    return got.slice(-take);
+  };
+
+  let notes;
+  if (markRead) {
+    notes = await mutate((b) => {
+      const got = select(b);
+      // Snapshot first: the listing below shows whether each note was unread
+      // when you fetched it, which is the useful thing to see.
+      const snapshot = got.map((n) => ({ ...n }));
+      const now = Date.now();
+      for (const n of got) if (!n.readAt) n.readAt = now;
+      logEvent(b, ACTOR, "note.read", `${got.length} note(s)`);
+      return snapshot;
+    });
+  } else {
+    notes = select(read());
+  }
 
   if (json) {
     console.log(JSON.stringify(notes, null, 2));

@@ -18,6 +18,7 @@ export const KNOWN_STATUSES = [
   "searching",
   "developing",
   "working",
+  "delegating",
   "testing",
   "reviewing",
   "debugging",

@@ -17,7 +17,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { HOME } from "./store.js";
+import { hostHome } from "./store.js";
 
 /**
  * Failure text that means "this backend is out of capacity", not "your task
@@ -89,7 +89,7 @@ export function classifyFailure(text) {
  * only cost of that is falling back to detection-after-failure.
  */
 const USAGE_SOURCES = {
-  claude: () => path.join(HOME, ".claude.json"),
+  claude: () => path.join(hostHome(), ".claude.json"),
 };
 
 const usageCache = new Map(); // file -> { mtimeMs, value }

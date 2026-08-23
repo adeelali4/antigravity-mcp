@@ -1,7 +1,7 @@
 {
   "name": "antigravity-mcp-server",
-  "version": "0.6.2",
-  "description": "Multi-agent MCP server enabling Claude Code, Cursor, and Copilot to orchestrate Antigravity tasks in parallel with zero file collisions and a live pixel-art office UI.",
+  "version": "0.6.3",
+  "description": "Run several AI coding CLIs on one repo at once. Any agent (Claude Code, Cursor, Copilot, Codex, Gemini, OpenCode, Antigravity) can delegate work to any other, with path locking so they never overwrite each other, automatic failover when one hits its usage limit, and a live pixel-art office dashboard. Works on Windows, macOS and Linux.",
   "type": "module",
   "bin": {
     "antigravity-mcp-server": "src/cli.js"
@@ -22,6 +22,7 @@
     "ui": "node src/cli.js ui",
     "test": "node test/smoke.js",
     "ui:build": "cd ui && npm install && npm run build",
+    "prepare": "node -e \"if(!require('fs').existsSync('ui-dist/index.html'))require('child_process').execSync('npm run ui:build',{stdio:'inherit'})\"",
     "prepublishOnly": "npm run ui:build"
   },
   "keywords": [
@@ -51,7 +52,25 @@
     "retro-office",
     "developer-tools",
     "pair-programming",
-    "visualization"
+    "visualization",
+    "ai-agent-orchestration",
+    "parallel-agents",
+    "subagents",
+    "agent-delegation",
+    "agent-handoff",
+    "rate-limit-failover",
+    "usage-limit",
+    "codex-cli",
+    "cross-platform",
+    "windows",
+    "macos",
+    "linux",
+    "coding-agent",
+    "agentic-coding",
+    "background-agents",
+    "agent-coordination",
+    "concurrency",
+    "mutex"
   ],
   "license": "MIT",
   "engines": {

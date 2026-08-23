@@ -217,10 +217,11 @@ That habit is exactly what catches a delegate that reports success without havin
 | **File collision prevention** | N/A | ❌ Silent file overwrites & broken builds | ✅ **Exclusive path locks (`claim_paths`)** |
 | **Shared task board** | ❌ None | ❌ None | ✅ **Live synchronized state (`board.json`)** |
 | **Inter-agent communication** | ❌ None | ❌ Manual copy-pasting by developer | ✅ **Native async notes & structured handoffs** |
-| **Cross-ecosystem support** | ❌ Single IDE/CLI | ❌ Siloed tools | ✅ **Claude Code, Cursor, Windsurf, Copilot, Antigravity** |
+| **Cross-ecosystem support** | ❌ Single IDE/CLI | ❌ Siloed tools | ✅ **Claude Code, Cursor, Windsurf, Copilot, Codex, Gemini, OpenCode, Antigravity — any-to-any** |
 | **Live visual office UI** | ❌ Logs/terminal only | ❌ Logs/terminal only | ✅ **Bundled retro pixel-art dashboard (`ui`)** |
 | **Token & cost optimization** | Baseline | High redundant token consumption | ✅ **27–90% payload compression & cached state** |
-| **Rate-limit failover** | ❌ Task aborts | ❌ Manual re-prompting | ✅ **Zero-token brief replay across backends** |
+| **Rate-limit failover** | ❌ Task aborts | ❌ Manual re-prompting | ✅ **Automatic — work reroutes to a free CLI, brief replayed at zero token cost** |
+| **Cross-platform** | Varies | Varies | ✅ **Windows, macOS, Linux** |
 
 ---
 
@@ -237,11 +238,59 @@ AI agents pay for every word they read. This server sits in the middle of a lot 
 | Cost reports came back as a wall of nested numbers | Summarised to what you'd actually read | **~90% smaller** |
 | Moving a task to another AI meant re-writing the brief | Replay the original from disk | A 4,000-token brief moves for **free** |
 | Tools offered for CLIs you don't even have installed | Only register what's actually on your machine | Fewer tools, less context, no dead ends |
+| Five near-identical status/wait/cancel tools per installed CLI | `ANTIGRAVITY_MCP_TOOLS=compact` collapses them into one generic set | **38 tools → 23**, ~33% less tool schema every session |
 
 Two more that aren't about tokens but about not losing your work:
 
 - **A crashed agent can't wedge the system.** File locks now free themselves the moment a task ends, and the shared board can't be corrupted by two agents writing at once — a real bug that was silently losing writes on Windows under load, now stress-tested with six processes hammering it at once.
 - **Nothing blocks.** Waiting on another agent never freezes the server; a long job survives your editor restarting.
+
+---
+
+## FAQ
+
+**Can I run Claude Code and GitHub Copilot on the same repo at the same time?**
+Yes — that is what this exists for. Each agent claims the files it is about to edit, and any
+other agent asking for an overlapping path is told who holds it instead of silently overwriting
+it. Neither agent needs to know the other exists.
+
+**Does one agent have to be in charge?**
+No. Every installed CLI is both a host that can delegate and a backend that can be delegated to.
+Copilot can hand work to Claude, Codex can hand work to Cursor, Antigravity can hand work to
+Gemini. There is no privileged agent and no fixed direction.
+
+**What happens when an agent hits its usage limit mid-task?**
+The task moves to another installed CLI automatically. The original brief is replayed from disk
+rather than regenerated, so rerouting costs zero tokens, and the reply tells you which backend
+picked it up. Pass `failover: false` on a delegate call if you want it to fail instead.
+
+**Does this work on Windows?**
+Yes — Windows, macOS and Linux. Binary discovery covers Homebrew, `~/.local/bin`, npm and pnpm
+global prefixes, snaps, Volta, asdf and the usual Windows install locations, and Windows `.cmd`
+shims are launched with proper argument quoting.
+
+**Which AI CLIs are supported?**
+Antigravity (`agy`), GitHub Copilot CLI, Claude Code, OpenAI Codex, Cursor, Gemini CLI and
+OpenCode out of the box. Anything else can be added in `~/.antigravity-mcp/backends.json`
+without waiting for a release — see [Adding your own CLI](#adding-your-own-cli).
+
+**Do I need API keys?**
+No. This coordinates CLIs already installed and signed in on your machine. It never sees a
+token, never proxies a request, and never talks to a model itself.
+
+**Is it another model or a router?**
+Neither. It is an MCP server: a shared board plus a delegation layer. The intelligence stays in
+the CLIs you already pay for.
+
+**How much context does it cost?**
+Only tools for CLIs actually installed are registered. On a machine with five, the full tool set
+is roughly 6k tokens; `ANTIGRAVITY_MCP_TOOLS=compact` brings that to about 4k by collapsing the
+per-backend status/wait/cancel tools into one generic set.
+
+**Can I see what the agents are doing?**
+`antigravity-mcp-server ui` opens a live office dashboard on http://localhost:49321 showing each
+agent searching, reading, running commands, editing, or handing work off — never idle while it
+is actually busy.
 
 ---
 
@@ -255,7 +304,7 @@ Your agent picks these on its own using MCP.
 
 | Group | Tools |
 |---|---|
-| **Hand off to any backend** | `<prefix>_delegate` · `<prefix>_task_status` · `<prefix>_task_wait` · `<prefix>_followup` · `<prefix>_cancel` |
+| **Hand off to any backend** | `<prefix>_delegate` · `<prefix>_task_status` · `<prefix>_task_wait` · `<prefix>_followup` · `<prefix>_cancel` <br>(in `compact` mode: `<prefix>_delegate` plus generic `task_status` · `task_wait` · `task_followup` · `task_cancel`) |
 | **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` · `task_reassign` |
 | **File locks** | `claim_paths` · `release_paths` · `check_paths` |
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
@@ -265,7 +314,7 @@ Your agent picks these on its own using MCP.
 
 `claude_delegate` launches a fully independent `claude` CLI process, not a subagent inside the calling session — and because it's a plain `claude` invocation, it automatically inherits whatever MCP servers are registered at user scope, this one included, so a delegated Claude can call `coop_status` / `claim_paths` on itself with no extra setup. The same is true of any backend that speaks MCP, which is what lets agy delegate to Claude, Claude delegate to Copilot, and so on in any direction.
 
-When a backend hits its usage limit, the failure is recognised as a *limit* rather than a bug, that backend is refused further work until it resets (and shown `blocked` in the office UI), and `coop_status` lists it under `unavailable_backends` with a reset time. To move work that was already in flight, `task_reassign(task_id, to)` replays the original brief from disk onto another backend — same directory, same reserved paths, and **the brief never passes through the model again**, so moving a 4,000-token delegation costs nothing to re-send.
+When a backend hits its usage limit, the failure is recognised as a *limit* rather than a bug, that backend is refused further work until it resets (and shown `blocked` in the office UI), and `coop_status` lists it under `unavailable_backends` with a reset time. **The work then moves on its own**: a delegation aimed at an exhausted backend is rerouted to another installed CLI before it ever spawns, and a task that dies mid-flight on a limit is picked up by the next available one. Either way the original brief is replayed from disk — **it never passes through the model again**, so moving a 4,000-token delegation costs nothing — and the reply names the backend that took it. Failover stops after three backends, so a genuinely broken brief can't tour every CLI on the machine. Pass `failover: false` on a delegate call to opt out, or use `task_reassign(task_id, to)` to move work by hand for any other reason.
 
 Worth knowing:
 - **`coop_status`** — one call answers everything: who's online, what's running, what's locked, what's unread. It also reaps every running task's real status first, and any lock still standing for a task that's already over is flagged `orphaned` with the reason why -- a finished task releases its own locks automatically, so a flag here means something slipped through (an old lock claimed without a task_id, say), not routine cleanup. Every response carries a `seq`; pass it back as `since_seq` on your next call and, if nothing changed, you get `{unchanged: true}` instead of the full payload. Empty sections (no locks, no unread notes, nothing active) are omitted from the response entirely rather than sent as empty arrays. Anything `board_post`'d to you that's still sitting at `open` shows up here every time, with a nudge in the hint, until you actually move it off `open` -- an assignment can't just get lost.
@@ -441,6 +490,8 @@ After updating:
 | `CODEX_BIN` · `CURSOR_AGENT_BIN` · `GEMINI_BIN` · `OPENCODE_BIN` | Same, for the other presets |
 | `<ID>_BIN` | Same again, for any backend you add yourself |
 | `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) — set it per project for full isolation |
+| `ANTIGRAVITY_MCP_HOST_HOME` | Where to look for other agents' transcripts and usage caches (default `~`) |
+| `ANTIGRAVITY_MCP_TOOLS` | `full` (default) or `compact` — `compact` collapses the per-backend `task_status`/`wait`/`followup`/`cancel` tools into one generic set, ~33% less tool schema per session |
 | `--agent <id>` | The name this instance uses on the board |
 | `~/.antigravity-mcp/backends.json` | Add your own CLI, or override a built-in preset |
 

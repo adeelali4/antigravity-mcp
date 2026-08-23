@@ -104,6 +104,57 @@ function allowAgyMcp({ dryRun }) {
   return { ok: true, detail: `added ${rule}` };
 }
 
+/** TOML basic string. Everything written here is a path or a flag, so this is enough. */
+function tomlString(v) {
+  return JSON.stringify(String(v));
+}
+
+/**
+ * Add or replace one `[<table>.<name>]` block in a TOML file.
+ *
+ * Codex is the only client that keeps its MCP registry in TOML, and pulling in
+ * a TOML parser to edit a single block would be a dependency for one file. A
+ * block edit covers the case that matters: find the block by its header, drop
+ * it up to the next section header, then append a fresh one. Every byte
+ * outside that block is preserved.
+ */
+function writeTomlServer(file, table, name, command, args) {
+  let existing = "";
+  try {
+    existing = fs.readFileSync(file, "utf8");
+  } catch {
+    existing = "";
+  }
+
+  const header = `[${table}.${name}]`;
+  const out = [];
+  let skipping = false;
+  let existed = false;
+  for (const line of existing.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === header) {
+      skipping = true;
+      existed = true;
+      continue;
+    }
+    // Any other section header ends the block being replaced.
+    if (skipping && trimmed.startsWith("[")) skipping = false;
+    if (!skipping) out.push(line);
+  }
+
+  const body = [
+    header,
+    `command = ${tomlString(command)}`,
+    `args = [${args.map(tomlString).join(", ")}]`,
+    "",
+  ].join("\n");
+
+  const before = out.join("\n").replace(/\s+$/, "");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, (before ? before + "\n" + "\n" : "") + body);
+  return existed;
+}
+
 export function init({ dryRun = false, launchMode = "auto", only = null, all = false } = {}) {
   const { command, args } = launcher(launchMode);
   const results = [];
@@ -120,6 +171,27 @@ export function init({ dryRun = false, launchMode = "auto", only = null, all = f
 
     const key = serverKey(client);
     const agentId = client.workerAgent || client.id;
+    const fullArgs = [...args, "--agent", agentId];
+
+    // Codex configures MCP servers in TOML; every other client is JSON.
+    if (client.format === "toml") {
+      if (dryRun) {
+        const already =
+          fs.existsSync(client.file) &&
+          fs.readFileSync(client.file, "utf8").includes(`[${client.key}.${key}]`);
+        results.push({ client: client.label, status: already ? "would update" : "would add", detail: client.file });
+        continue;
+      }
+      try {
+        backup(client.file);
+        const had = writeTomlServer(client.file, client.key, key, command, fullArgs);
+        results.push({ client: client.label, status: had ? "updated" : "added", detail: client.file });
+      } catch (e) {
+        results.push({ client: client.label, status: "error", detail: e.message });
+      }
+      continue;
+    }
+
     let cfg;
     try {
       cfg = readJson(client.file);
@@ -130,7 +202,7 @@ export function init({ dryRun = false, launchMode = "auto", only = null, all = f
 
     cfg[client.key] ||= {};
     const existed = Boolean(cfg[client.key][key]);
-    cfg[client.key][key] = entryFor(client, command, [...args, "--agent", agentId]);
+    cfg[client.key][key] = entryFor(client, command, fullArgs);
 
     if (dryRun) {
       results.push({ client: client.label, status: existed ? "would update" : "would add", detail: client.file });

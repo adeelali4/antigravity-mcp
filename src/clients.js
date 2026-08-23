@@ -91,6 +91,18 @@ export const CLIENTS = [
     shape: "standard",
     workerAgent: "antigravity",
   },
+  // OpenAI Codex CLI. Configured in TOML, not JSON, so it carries format:"toml"
+  // and init writes it with a targeted block edit rather than a JSON rewrite.
+  // Registering it matters for symmetry: codex is already a delegation TARGET,
+  // and every target should also be able to delegate outward.
+  {
+    id: "codex-cli",
+    label: "OpenAI Codex CLI",
+    file: path.join(HOME, ".codex", "config.toml"),
+    key: "mcp_servers",
+    shape: "standard",
+    format: "toml",
+  },
   // GitHub Copilot CLI — also a worker, agent id "copilot". Its own `copilot
   // mcp add` command writes this exact shape, so this mirrors that rather
   // than shelling out to a binary that may not be on PATH at init time.

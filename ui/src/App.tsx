@@ -37,10 +37,16 @@ export default function App() {
     let cancelled = false;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
     let demo: MockAgentEventSource | null = null;
+    // Whether the bridge has EVER opened. Tracked in the closure rather than
+    // read off `mode`: this effect runs once, so a `mode` captured here stays
+    // "connecting" forever, and a live connection that later dropped would
+    // fall through to the demo source instead of showing "Reconnecting…".
+    let everConnected = false;
 
     const live = new WebSocketAgentEventSource(BRIDGE_URL, (status) => {
       if (cancelled) return;
       if (status === "open") {
+        everConnected = true;
         if (fallbackTimer) {
           clearTimeout(fallbackTimer);
           fallbackTimer = null;
@@ -54,8 +60,12 @@ export default function App() {
       } else if (status === "reconnecting") {
         setMode((prev) => (prev === "demo" ? "demo" : "reconnecting"));
       } else if (status === "closed" || status === "error") {
-        if (fallbackTimer === null && mode === "connecting") {
+        // A bridge that was live and dropped is reconnecting, not absent --
+        // only fall back to demo data if it never came up at all.
+        if (!everConnected && fallbackTimer === null && !demo) {
           goDemo();
+        } else if (everConnected) {
+          setMode((prev) => (prev === "demo" ? "demo" : "reconnecting"));
         }
       }
     });
