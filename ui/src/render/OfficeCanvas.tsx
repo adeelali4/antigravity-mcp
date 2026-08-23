@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAgentStore } from "../store/agentStore";
 import { MovementEngine } from "../simulation/MovementEngine";
 import { WORLD_W, WORLD_H, getLocation, listDeskLocations } from "../office/layout";
-import { drawRoom, drawDesk, drawDeskScreen, drawMeetingRoom, drawLounge, drawCharacter, drawInteractionLink } from "./sprites";
+import { drawRoom, drawDesk, drawDeskScreen, drawMeetingRoom, drawLounge, drawCharacter, drawInteractionLink, drawActivityCaption } from "./sprites";
 import type { Agent } from "../types";
 
 interface HoverInfo {
@@ -145,6 +145,13 @@ export function OfficeCanvas({ engine, selectedId, onSelect }: Props) {
         highlighted: selectedId === agent.id,
         inInteraction: agent.interaction !== null,
       });
+      // A readable line of what the agent is doing, so it never takes a
+      // hover or a sidebar click to tell a busy agent from an idle one.
+      if (agent.connectionStatus === "connected") {
+        ctx.globalAlpha = anim.opacity;
+        drawActivityCaption(ctx, anim.x, anim.y + 20, agent.status, agent.currentTask);
+        ctx.globalAlpha = 1;
+      }
     }
   }
 

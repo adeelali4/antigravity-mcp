@@ -21,6 +21,41 @@ export function drawRoom(ctx: CanvasRenderingContext2D) {
   px(ctx, 0, 26, WORLD_W, 4, PALETTE.wallTrim);
 }
 
+/**
+ * Statuses that read as "nothing to say" -- the badge already goes quiet for
+ * these (see drawStatusBadge), so a caption here would just repeat "idle" or
+ * "offline" under every character doing nothing. Everything else gets one.
+ */
+const CAPTION_SKIP = new Set(["idle", "offline"]);
+
+/** Keep a caption inside one desk's width (~180px in this layout) at 9px monospace. */
+function truncateCaption(text: string, max = 26): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  return trimmed.slice(0, max - 1).trimEnd() + "…";
+}
+
+/**
+ * The actual words for what an agent is doing, drawn under its sprite.
+ *
+ * The status badge above the head is a glance-level icon (a magnifying glass,
+ * an arrow) -- useful once you know the vocabulary, opaque until then. This is
+ * the readable line: the live task detail if there is one ("Editing: auth.ts"),
+ * otherwise the status word itself ("Developing"). Skipped for idle/offline so
+ * a quiet desk doesn't get a caption saying so twice over.
+ */
+export function drawActivityCaption(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  status: string,
+  detail: string | null
+) {
+  if (CAPTION_SKIP.has(status)) return;
+  const raw = detail && detail.trim() ? detail : status[0].toUpperCase() + status.slice(1);
+  labelPill(ctx, truncateCaption(raw), x, y, PALETTE.textPrimary, "#1c2038", 9);
+}
+
 // -------------------------------------------------------------------- desks
 
 export function drawDesk(ctx: CanvasRenderingContext2D, loc: Location, agentName: string | null, connected: boolean) {

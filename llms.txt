@@ -109,7 +109,6 @@ Coordination, shared by every agent:
 | --- | --- |
 | `ANTIGRAVITY_MCP_HOME` | Shared board location (default `~/.antigravity-mcp`) |
 | `ANTIGRAVITY_MCP_HOST_HOME` | Where to look for other agents' transcripts and usage (default `~`) |
-| `ANTIGRAVITY_MCP_TOOLS` | `full` (default) or `compact` — `compact` collapses the per-backend task tools into one generic set, about a third fewer tokens of tool schema per session |
 | `AGY_BIN`, `CLAUDE_BIN`, `COPILOT_BIN`, `CODEX_BIN`, `CURSOR_AGENT_BIN`, `GEMINI_BIN`, `OPENCODE_BIN` | Explicit path to a CLI binary |
 
 ## Requirements

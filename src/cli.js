@@ -113,9 +113,6 @@ const HELP = `
     CLAUDE_BIN               Path to the claude binary
     ANTIGRAVITY_MCP_HOME    Shared board location (default ~/.antigravity-mcp)
     ANTIGRAVITY_MCP_HOST_HOME  Where to look for other agents' transcripts/usage (default ~)
-    ANTIGRAVITY_MCP_TOOLS   full (default) or compact — compact collapses the per-backend
-                            task_status/wait/followup/cancel tools into one generic set,
-                            roughly a third fewer tokens of tool schema per session
 `;
 
 function openInBrowser(url) {

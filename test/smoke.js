@@ -33,13 +33,13 @@ const check = (name, cond, extra = "") => {
   if (!cond) failures++;
 };
 
-async function connect(agent, env = {}) {
+async function connect(agent) {
   const client = new Client({ name: `test-${agent}`, version: "0" });
   await client.connect(
     new StdioClientTransport({
       command: process.execPath,
       args: [CLI, "--agent", agent],
-      env: { ...process.env, ANTIGRAVITY_MCP_HOME: SANDBOX, ANTIGRAVITY_MCP_HOST_HOME: HOST_HOME, ...env },
+      env: { ...process.env, ANTIGRAVITY_MCP_HOME: SANDBOX, ANTIGRAVITY_MCP_HOST_HOME: HOST_HOME },
     })
   );
   return client;
@@ -256,23 +256,6 @@ board.presence.claude.status = "idle";
 board.presence.claude.detail = "";
 const inferredAgent = computeAgents(board, { projectCwd }).find((a) => a.id === "claude");
 check("idle presence falls back to inferred activity", inferredAgent?.status === "bashing", inferredAgent?.status);
-
-// --- compact tool mode: fewer schemas, same reach ---
-const compact = await connect("compact-probe", { ANTIGRAVITY_MCP_TOOLS: "compact" });
-const compactNames = new Set((await compact.listTools()).tools.map((t) => t.name));
-check("compact mode keeps a delegate lane per backend",
-  [...compactNames].filter((n) => n.endsWith("_delegate")).length === lanes.length);
-check("compact mode registers generic follow-ons",
-  ["task_status", "task_wait", "task_cancel", "task_followup"].every((n) => compactNames.has(n)));
-check("compact mode drops the per-backend follow-ons",
-  ![...compactNames].some((n) => n.endsWith("_task_status") || n.endsWith("_task_wait")));
-check("compact mode keeps every coordination tool", COORDINATION.every((n) => compactNames.has(n)));
-check("compact mode is meaningfully smaller", compactNames.size < names.size, `${compactNames.size} vs ${names.size}`);
-check("generic task_status handles an unknown id",
-  (await call(compact, "task_status", { task_id: "nope" })).error !== undefined);
-check("generic task_followup handles an unknown id",
-  (await call(compact, "task_followup", { task_id: "nope", prompt: "x" })).error !== undefined);
-await compact.close();
 
 // --- failover: a limited backend must hand its work to one that can take it ---
 const prefixes = BACKENDS_LIST.map((b) => b.prefix);

@@ -238,7 +238,6 @@ AI agents pay for every word they read. This server sits in the middle of a lot 
 | Cost reports came back as a wall of nested numbers | Summarised to what you'd actually read | **~90% smaller** |
 | Moving a task to another AI meant re-writing the brief | Replay the original from disk | A 4,000-token brief moves for **free** |
 | Tools offered for CLIs you don't even have installed | Only register what's actually on your machine | Fewer tools, less context, no dead ends |
-| Five near-identical status/wait/cancel tools per installed CLI | `ANTIGRAVITY_MCP_TOOLS=compact` collapses them into one generic set | **38 tools → 23**, ~33% less tool schema every session |
 
 Two more that aren't about tokens but about not losing your work:
 
@@ -283,9 +282,7 @@ Neither. It is an MCP server: a shared board plus a delegation layer. The intell
 the CLIs you already pay for.
 
 **How much context does it cost?**
-Only tools for CLIs actually installed are registered. On a machine with five, the full tool set
-is roughly 6k tokens; `ANTIGRAVITY_MCP_TOOLS=compact` brings that to about 4k by collapsing the
-per-backend status/wait/cancel tools into one generic set.
+Only tools for CLIs actually installed are registered — nothing is offered for a CLI you don't have.
 
 **Can I see what the agents are doing?**
 `antigravity-mcp-server ui` opens a live office dashboard on http://localhost:49321 showing each
@@ -304,7 +301,7 @@ Your agent picks these on its own using MCP.
 
 | Group | Tools |
 |---|---|
-| **Hand off to any backend** | `<prefix>_delegate` · `<prefix>_task_status` · `<prefix>_task_wait` · `<prefix>_followup` · `<prefix>_cancel` <br>(in `compact` mode: `<prefix>_delegate` plus generic `task_status` · `task_wait` · `task_followup` · `task_cancel`) |
+| **Hand off to any backend** | `<prefix>_delegate` · `<prefix>_task_status` · `<prefix>_task_wait` · `<prefix>_followup` · `<prefix>_cancel` |
 | **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` · `task_reassign` |
 | **File locks** | `claim_paths` · `release_paths` · `check_paths` |
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
@@ -491,7 +488,6 @@ After updating:
 | `<ID>_BIN` | Same again, for any backend you add yourself |
 | `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) — set it per project for full isolation |
 | `ANTIGRAVITY_MCP_HOST_HOME` | Where to look for other agents' transcripts and usage caches (default `~`) |
-| `ANTIGRAVITY_MCP_TOOLS` | `full` (default) or `compact` — `compact` collapses the per-backend `task_status`/`wait`/`followup`/`cancel` tools into one generic set, ~33% less tool schema per session |
 | `--agent <id>` | The name this instance uses on the board |
 | `~/.antigravity-mcp/backends.json` | Add your own CLI, or override a built-in preset |
 

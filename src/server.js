@@ -705,26 +705,6 @@ async function cancelTask(task_id) {
  * can't drift out of sync the way they had started to (agy/claude/copilot's
  * conversation_id wording had already diverged before this refactor).
  */
-/**
- * How many delegation tools to register.
- *
- * "full" (default) gives every backend its own five: ag_delegate,
- * ag_task_status, ag_task_wait, ag_followup, ag_cancel, and the same again for
- * copilot, claude, codex and the rest. Explicit, and what existing setups name.
- *
- * The catch is that four of those five are pure duplication -- a task_id
- * already says which backend owns it, so ag_task_status and claude_task_status
- * do exactly the same lookup. On a machine with five CLIs installed that is 20
- * near-identical tool definitions, and every one is re-sent to the model on
- * every session. "compact" keeps the per-backend *_delegate tools (which do
- * differ -- different flags, different models) and collapses the follow-ons
- * into one generic set, roughly halving the schema the model has to carry.
- *
- * Opt-in rather than the default, because switching renames tools that
- * existing prompts and instructions already reference.
- */
-const TOOL_MODE = process.env.ANTIGRAVITY_MCP_TOOLS === "compact" ? "compact" : "full";
-
 function registerDelegationTools(server, spec) {
   const toolPrefix = spec.prefix;
   const label = spec.label;
@@ -781,10 +761,6 @@ function registerDelegationTools(server, spec) {
       );
     }
   );
-
-  // In compact mode the four follow-on tools below are registered once,
-  // generically, by registerGenericTaskTools() instead of once per backend.
-  if (TOOL_MODE === "compact") return;
 
   if (spec.resume) {
     server.registerTool(
@@ -870,109 +846,6 @@ function registerDelegationTools(server, spec) {
     {
       title: `Cancel a delegated ${label} task`,
       description: `Stop a running delegated ${label} task and release any paths it held.`,
-      inputSchema: { task_id: z.string() },
-    },
-    async ({ task_id }) => ok(await cancelTask(task_id))
-  );
-}
-
-
-/**
- * Backend-agnostic versions of the follow-on tools, for compact mode.
- *
- * Everything they need is already on the board: a task records its owner, so
- * the backend is looked up rather than named by the caller.
- */
-function registerGenericTaskTools(server) {
-  const specFor = (task) => (task?.owner ? backendFor(task.owner) : null);
-
-  const trim = (t, { include_output, include_usage_detail, output_mode }) => {
-    if (!t || t.error) return t;
-    if (!include_output) delete t.result;
-    else if (output_mode !== "full" && typeof t.result === "string") t.result = previewResult(t.result);
-    if (!include_usage_detail && t.usage) t.usage = summarizeUsage(t.usage);
-    return t;
-  };
-
-  server.registerTool(
-    "task_status",
-    {
-      title: "Check a delegated task",
-      description:
-        "Status of any delegated task, whichever CLI is running it, plus its response and " +
-        "conversation id once done. Long responses come back as a head/tail preview; " +
-        'output_mode:"full" for all of it.',
-      inputSchema: {
-        task_id: z.string(),
-        include_output: z.boolean().optional(),
-        include_usage_detail: z.boolean().optional(),
-        output_mode: z.enum(["preview", "full"]).optional(),
-      },
-    },
-    async ({ task_id, include_output = true, include_usage_detail = false, output_mode = "preview" }) =>
-      ok(trim(slim(await reap(task_id)), { include_output, include_usage_detail, output_mode }))
-  );
-
-  server.registerTool(
-    "task_wait",
-    {
-      title: "Wait for a delegated task",
-      description:
-        "Block until a delegated task finishes. Prefer task_status and doing your own work " +
-        "meanwhile; only wait when blocked on its result. Raise timeout_seconds rather than " +
-        "re-polling in a loop.",
-      inputSchema: {
-        task_id: z.string(),
-        timeout_seconds: z.number().int().optional(),
-        include_usage_detail: z.boolean().optional(),
-        output_mode: z.enum(["preview", "full"]).optional(),
-      },
-    },
-    async ({ task_id, timeout_seconds = 300, include_usage_detail = false, output_mode = "preview" }) => {
-      const deadline = Date.now() + Math.max(1, timeout_seconds) * 1000;
-      for (;;) {
-        const t = await reap(task_id);
-        if (t.error || ["done", "failed", "cancelled"].includes(t.status)) {
-          return ok(trim(slim(t), { include_output: true, include_usage_detail, output_mode }));
-        }
-        if (Date.now() >= deadline) {
-          return ok({ ...slim(t), timed_out_waiting: true, note: "Still running. Call task_status later." });
-        }
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-  );
-
-  server.registerTool(
-    "task_followup",
-    {
-      title: "Follow up in the same session",
-      description:
-        "Send a follow-up into the SAME session as a finished task so it keeps its context. " +
-        "Use instead of a fresh delegate whenever the request builds on work it just did.",
-      inputSchema: { task_id: z.string(), prompt: z.string() },
-    },
-    async ({ task_id, prompt }) => {
-      const task = read().tasks.find((t) => t.id === task_id);
-      if (!task) return ok({ error: `no such task: ${task_id}` });
-      const spec = specFor(task);
-      if (!spec) return ok({ error: `no installed backend for ${task.owner}` });
-      if (spec.resume === false) return ok({ error: `${spec.label} cannot resume a specific session` });
-      return ok(
-        await followupTask({
-          owner: spec.owner, task_id, prompt,
-          spawn: (tid, p, extra) => spawnBackend(spec, tid, p, extra),
-          buildExtra: (conversationId) => ({ resume: conversationId }),
-        })
-      );
-    }
-  );
-
-  server.registerTool(
-    "task_cancel",
-    {
-      title: "Cancel a delegated task",
-      description: "Stop a running delegated task and release any paths it held.",
       inputSchema: { task_id: z.string() },
     },
     async ({ task_id }) => ok(await cancelTask(task_id))
@@ -1138,7 +1011,6 @@ export async function buildServer() {
   for (const spec of BACKENDS_LIST) {
     registerDelegationTools(server, spec);
   }
-  if (TOOL_MODE === "compact") registerGenericTaskTools(server);
 
   server.registerTool(
     "task_reassign",
