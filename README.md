@@ -26,7 +26,7 @@ They can't see each other. That's the whole issue.
 
 ## The fix
 
-One small server every agent plugs into. It acts as their shared brain, tracking who is doing what and which files are claimed. It gives whichever agent you're talking to the ability to spin up any other AI CLI you have — Antigravity, Copilot, Codex, Cursor, another Claude — to do its chores in the background, while you two keep working in your main window.
+One small server every agent plugs into. It acts as their shared state, tracking who is doing what and which files are claimed. It gives whichever agent you're talking to the ability to spin up any other AI CLI you have — Antigravity, Copilot, Codex, Cursor, another Claude — to do its chores in the background, while you two keep working in your main window.
 
 ```
         YOU talk to whichever agent you already use
@@ -40,7 +40,7 @@ One small server every agent plugs into. It acts as their shared brain, tracking
         ┌─────────────────────────────────────┐
         │       antigravity-mcp-server        │
         │                                     │
-        │  board.json ── the shared brain     │
+        │  board.json ── shared state         │
         │   ├─ tasks ..... who does what      │
         │   ├─ locks ..... files taken        │
         │   ├─ notes ..... messages           │
@@ -289,6 +289,21 @@ Only tools for CLIs actually installed are registered — nothing is offered for
 agent searching, reading, running commands, editing, or handing work off — never idle while it
 is actually busy.
 
+**Does memory survive a new session, or a board reset?**
+Yes — that's the point of it. `coop_status` (already called before starting work) and `brain_read`
+don't depend on any prior session's own context: a brand-new agent connecting for the first time
+sees the same current status and history a session that had been running for weeks would. The
+board itself is intentionally the opposite — pruned, and wiped entirely by `coop_reset` — because
+coordination state and durable memory have different lifecycles. See [Durable project
+memory](#durable-project-memory) below.
+
+**Why plain markdown for the brain, not vector embeddings or SQLite?**
+Zero dependencies and total transparency. Markdown files under `~/.antigravity-mcp/brain/` (one
+per project) work instantly with no extra installs, no embedding models to download, no Python
+toolchain — and can be read, edited, or committed with `git` like any other project doc. If you
+want semantic search instead of substring search, that's a good job for a dedicated memory MCP
+server alongside this one; we don't bundle one, to keep working everywhere with zero setup.
+
 ---
 
 ## Under the hood
@@ -305,6 +320,7 @@ Your agent picks these on its own using MCP.
 | **Shared board** | `coop_status` · `board_post` · `board_update` · `board_list` · `task_reassign` |
 | **File locks** | `claim_paths` · `release_paths` · `check_paths` |
 | **Talking** | `notes_send` · `notes_read` · `presence_set` · `activity` |
+| **Memory** | `brain_write` · `brain_read` · `brain_search` |
 | **Admin** | `coop_restart` · `coop_reset` |
 
 `<prefix>` is the backend: `ag`, `copilot`, `claude`, `codex`, `cursor`, `gemini`, `opencode`, or whatever you named your own. Every lane is symmetric — same shape, same behaviour — so your agent just picks whichever CLI you named, and none of them is a special case. Only lanes whose CLI is actually installed get registered.
@@ -319,6 +335,19 @@ Worth knowing:
 - **`<prefix>_followup`** — carries on the *same* conversation, so you don't re-explain context.
 - **`*_task_status` / `*_task_wait`** — a long response comes back as a head/tail preview by default, not the whole thing; pass `output_mode: "full"` when you actually need every character. `include_usage_detail: true` gets you the backend's raw token/cost breakdown instead of the `{input_tokens, output_tokens, total_tokens}` summary returned by default.
 
+### Durable project memory
+
+`coop_status`, `board_post` and friends are deliberately ephemeral — the board gets pruned, and `coop_reset` wipes it entirely. That's the right lifecycle for coordination state, but it means nothing an agent learns survives a reset or a brand-new session on its own. `brain_write` / `brain_read` / `brain_search` are the separate, durable answer: plain markdown, one file per project, that a session with *zero* prior context can read from its very first `coop_status` call.
+
+Each project gets one file with three sections:
+- **Current Status** — one paragraph, *overwritten* on every `brain_write({section: "status"})` call, not appended. This is the one deliberate exception to append-only in the whole feature: "where does this stand right now" only has one true answer at a time, and a growing log of every past status wouldn't tell a new session which one is current.
+- **Key Decisions** — append-only, for the rare, durable architectural call.
+- **Log** — append-only, timestamped and agent-attributed, for routine progress notes.
+
+`coop_status` surfaces a small, capped preview of all three (status first) as `project_memory`, omitted entirely when a project has no memory yet — so the common case costs nothing. `brain_search` is scoped to the current project by default, same as `brain_write`/`brain_read` — being in one project shouldn't surface another, unrelated one unasked. Pass `all_projects: true` for "have we hit this before, anywhere," or `cwd` to search one specific other project.
+
+Files live under `~/.antigravity-mcp/brain/` by default (or `ANTIGRAVITY_MCP_BRAIN`, if set) — plain files, so they're readable, `git`-committable, and happen to also be an openable Obsidian vault if you have it (any folder is, via "Open folder as vault") with zero setup on either side. This project never detects or writes into an *existing* vault of yours; that stays your explicit choice via `ANTIGRAVITY_MCP_BRAIN`, never something done for you.
+
 ### How it works inside
 
 #### Files on disk
@@ -326,10 +355,14 @@ Worth knowing:
 ```
 ~/.antigravity-mcp/
 ├── board.json                    shared state, written under a lock
-└── runs/
-    ├── <task_id>.json            agy's raw result
-    ├── <task_id>.prompt.txt      the brief that was sent
-    └── <task_id>.err             stderr, if the run failed
+├── runs/
+│   ├── <task_id>.json            agy's raw result
+│   ├── <task_id>.prompt.txt      the brief that was sent
+│   └── <task_id>.err             stderr, if the run failed
+└── brain/                        durable memory (or wherever ANTIGRAVITY_MCP_BRAIN points)
+    ├── MEMORY.md                 index, one line per project
+    └── Projects/
+        └── <slug>.md             one file per project -- status, decisions, log
 ```
 
 `board.json` holds `tasks`, `locks`, `notes`, `events`, and `presence`. Every write takes an exclusive lock (an atomically created directory — the one primitive that behaves the same on Windows and POSIX), then lands via write-temp-and-rename, so a crash can't leave a half-written board. Stale locks older than 20s are broken automatically.
@@ -488,6 +521,7 @@ After updating:
 | `<ID>_BIN` | Same again, for any backend you add yourself |
 | `ANTIGRAVITY_MCP_HOME` | Board location (default `~/.antigravity-mcp`) — set it per project for full isolation |
 | `ANTIGRAVITY_MCP_HOST_HOME` | Where to look for other agents' transcripts and usage caches (default `~`) |
+| `ANTIGRAVITY_MCP_BRAIN` | Durable memory location (default `~/.antigravity-mcp/brain`) — point it at your own Obsidian vault for tighter integration |
 | `--agent <id>` | The name this instance uses on the board |
 | `~/.antigravity-mcp/backends.json` | Add your own CLI, or override a built-in preset |
 

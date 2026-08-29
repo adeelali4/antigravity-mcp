@@ -14,7 +14,7 @@ const WIN = process.platform === "win32";
 const MAC = process.platform === "darwin";
 const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
 
-const appSupport = (...p) =>
+export const appSupport = (...p) =>
   MAC ? path.join(HOME, "Library", "Application Support", ...p)
   : WIN ? path.join(APPDATA, ...p)
   : path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"), ...p);

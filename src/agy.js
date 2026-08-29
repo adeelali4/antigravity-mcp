@@ -2,7 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { HOME, runsDir } from "./store.js";
+import { HOME, outPath } from "./store.js";
 import { WIN, findBinary, standardCandidates } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
@@ -26,10 +26,6 @@ export function findAgy({ required = true } = {}) {
   return found ? (cached = found) : null;
 }
 
-export const outPath = (id) => path.join(runsDir(), `${id}.json`);
-export const errPath = (id) => path.join(runsDir(), `${id}.err`);
-export const promptPath = (id) => path.join(runsDir(), `${id}.prompt.txt`);
-
 /** agy may print banner lines before its JSON object, so scan for the object. */
 export function readResult(id) {
   let raw = "";
@@ -45,13 +41,5 @@ export function readResult(id) {
     return JSON.parse(raw.slice(start));
   } catch {
     return null;
-  }
-}
-
-export function readStderr(id) {
-  try {
-    return fs.readFileSync(errPath(id), "utf8").slice(-4000);
-  } catch {
-    return "";
   }
 }

@@ -168,12 +168,25 @@ export function getAntigravityActivity() {
             ts: newestMtime,
           };
         }
-        if (name === "find_by_name" || name === "list_dir") {
+        if (name === "find_by_name") {
           const pat = tc.args?.Pattern || "";
           const cleanPat = typeof pat === "string" ? pat.replace(/^"|"$/g, "") : "";
           return {
             status: "finding",
             detail: cleanAction || (cleanPat ? `Finding: ${cleanPat}` : "Finding files"),
+            ts: newestMtime,
+          };
+        }
+        if (name === "list_dir") {
+          // A real directory path, not a glob pattern -- find_by_name and
+          // list_dir were previously conflated under Pattern, which is
+          // find_by_name's argument only; list_dir's is DirectoryPath.
+          // Verified against real transcripts, not guessed.
+          const dir = tc.args?.DirectoryPath || "";
+          const cleanDir = typeof dir === "string" ? path.basename(dir.replace(/^"|"$/g, "")) : "";
+          return {
+            status: "finding",
+            detail: cleanAction || (cleanDir ? `Listing: ${cleanDir}` : "Listing directory"),
             ts: newestMtime,
           };
         }

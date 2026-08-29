@@ -1,9 +1,8 @@
 /** Locating, launching and reaping another Claude Code CLI (`claude`) instance. */
 
 import fs from "node:fs";
-import path from "node:path";
-import { HOME, runsDir } from "./store.js";
-import { WIN, findBinary, standardCandidates } from "./proc.js";
+import { outPath } from "./store.js";
+import { findBinary, standardCandidates } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
 
@@ -20,10 +19,6 @@ export function findClaude({ required = true } = {}) {
   });
   return found ? (cached = found) : null;
 }
-
-export const outPath = (id) => path.join(runsDir(), `${id}.json`);
-export const errPath = (id) => path.join(runsDir(), `${id}.err`);
-export const promptPath = (id) => path.join(runsDir(), `${id}.prompt.txt`);
 
 /**
  * claude --output-format json prints one JSON object with the final text
@@ -53,12 +48,4 @@ export function readResult(id) {
     conversation_id: payload.session_id,
     usage: payload.usage,
   };
-}
-
-export function readStderr(id) {
-  try {
-    return fs.readFileSync(errPath(id), "utf8").slice(-4000);
-  } catch {
-    return "";
-  }
 }

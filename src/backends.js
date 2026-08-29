@@ -22,15 +22,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { HOME, runsDir, ensureDirs, stateDir } from "./store.js";
-import { findBinary, launchSpec, standardCandidates } from "./proc.js";
-import { readResult as readAgyResult, readStderr as readAgyStderr, findAgy } from "./agy.js";
+import { HOME, ensureDirs, stateDir, outPath, errPath, promptPath, readStderr } from "./store.js";
+import { findBinary, launchSpec, standardCandidates, isAlive } from "./proc.js";
+import { readResult as readAgyResult, findAgy } from "./agy.js";
 import { readResult as readCopilotResult, findCopilot } from "./copilot.js";
 import { readResult as readClaudeResult, findClaude } from "./claude.js";
 
-export const outPath = (id) => path.join(runsDir(), `${id}.json`);
-export const errPath = (id) => path.join(runsDir(), `${id}.err`);
-export const promptPath = (id) => path.join(runsDir(), `${id}.prompt.txt`);
+// Re-exported for callers that only ever knew these as backends.js exports
+// (commands.js in particular) -- the definitions themselves now live in
+// store.js, next to runsDir(), which is what they're built from.
+export { outPath, errPath, promptPath };
 
 /**
  * Separates the caller's actual task from the wrapper briefingFor() puts
@@ -79,7 +80,6 @@ const BUILTIN = [
       return args;
     },
     parse: readAgyResult,
-    readStderr: readAgyStderr,
   },
   {
     id: "copilot", label: "Copilot", owner: "copilot-agent", verified: true,
@@ -189,7 +189,7 @@ const dig = (obj, dotted) =>
   dotted.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
 
 /** Turn a spec's declarative `output` block into the same shape the hand-written parsers return. */
-function declarativeParse(spec, id) {
+function declarativeParse(spec, id, pid) {
   let raw;
   try {
     raw = fs.readFileSync(outPath(id), "utf8");
@@ -222,7 +222,19 @@ function declarativeParse(spec, id) {
     };
   }
 
-  // jsonl: the answer is the last event that carries the response field.
+  // jsonl: unlike the "json" branch above, each line is independently valid
+  // JSON the moment it's flushed, so a half-written FILE never fails to
+  // parse the way a half-written single object does -- there is no free
+  // "still running" signal here. A backend that emits progress events
+  // carrying the same response field as its final answer (a plausible shape
+  // for e.g. codex's per-turn messages) would otherwise have its latest
+  // in-progress line mistaken for the finished result, which reap() then
+  // trusts to release locks and reset presence while the worker is still
+  // actively running. Require the process to have actually exited before
+  // treating any of this as final -- if it hasn't, that's "still running,"
+  // not "done," no matter how good the last line looks.
+  if (pid != null && isAlive(pid)) return null;
+
   let last = null;
   let sessionId = null;
   let usageVal;
@@ -242,14 +254,6 @@ function declarativeParse(spec, id) {
   }
   if (last === null) return null;
   return { status: "SUCCESS", response: last, conversation_id: sessionId, usage: usageVal };
-}
-
-function readStderrFor(id) {
-  try {
-    return fs.readFileSync(errPath(id), "utf8").slice(-4000);
-  } catch {
-    return "";
-  }
 }
 
 /**
@@ -331,8 +335,8 @@ export function loadBackends() {
             label: `${spec.label} CLI (${spec.bin?.name || spec.id})`,
             required,
           }),
-    readResult: spec.parse ? spec.parse : (id) => declarativeParse(spec, id),
-    readStderr: spec.readStderr || readStderrFor,
+    readResult: spec.parse ? spec.parse : (id, pid) => declarativeParse(spec, id, pid),
+    readStderr: spec.readStderr || readStderr,
   }));
 }
 
@@ -350,20 +354,28 @@ export function spawnBackend(spec, id, prompt, opts = {}) {
   fs.writeFileSync(promptPath(id), prompt);
   const out = fs.openSync(outPath(id), "w");
   const err = fs.openSync(errPath(id), "w");
-  const launch = launchSpec(spec.findBin(), args);
-  const child = spawn(launch.file, launch.args, {
-    cwd: opts.cwd,
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", out, err],
-    ...launch.options,
-  });
-  // Detached and unref'd, so nothing else observes this child -- without a
-  // listener a post-spawn failure emits an unhandled 'error' that kills this
-  // process. reap()'s isAlive(pid) check already handles a dead pid.
-  child.on("error", () => {});
-  child.unref();
-  fs.closeSync(out);
-  fs.closeSync(err);
-  return child.pid;
+  // findBin()/launchSpec() run AFTER the fds are open, and can throw (binary
+  // resolution failing here despite the earlier findBin() check callers
+  // already did -- a rare TOCTOU, but not impossible). Without the
+  // try/finally, that throw skips both closeSync calls below and leaks the
+  // two fds for the life of this server process.
+  try {
+    const launch = launchSpec(spec.findBin(), args);
+    const child = spawn(launch.file, launch.args, {
+      cwd: opts.cwd,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", out, err],
+      ...launch.options,
+    });
+    // Detached and unref'd, so nothing else observes this child -- without a
+    // listener a post-spawn failure emits an unhandled 'error' that kills this
+    // process. reap()'s isAlive(pid) check already handles a dead pid.
+    child.on("error", () => {});
+    child.unref();
+    return child.pid;
+  } finally {
+    fs.closeSync(out);
+    fs.closeSync(err);
+  }
 }

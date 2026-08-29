@@ -11,6 +11,7 @@ import { restart, printRestart } from "../src/restart.js";
 import { lockFromCli, unlockFromCli, sendNoteFromCli, readNotesFromCli } from "../src/commands.js";
 import { read as readBoard, mutate as mutateBoard } from "../src/store.js";
 import { pickFailover, BACKENDS_LIST } from "../src/server.js";
+import { writeBrainNote, readBrainNote, brainPreview, searchBrain, projectSlug, brainRoot } from "../src/brain.js";
 import {
   computeAgents, inferLiveActivity, getAntigravityActivity, getClaudeActivity,
   claudeProjectDir, resetHostScanCache,
@@ -98,6 +99,76 @@ check("presence visible to peer", status.presence.some((p) => p.agent === "antig
 check("peer sees locked paths", status.locked_paths.length === 3);
 check("identity is per-process", status.you_are === "claude");
 
+// --- brain tools over the real stdio connection ---
+// cwdA/cwdB declared here (not down by the direct-checks block below, closer
+// to where projectSlug() is exercised) because these round-trip checks need
+// them first in file-execution order.
+const cwdA = path.join(SANDBOX, "workspaces", "teamA", "backend");
+const cwdB = path.join(SANDBOX, "workspaces", "teamB", "backend");
+const slugA = projectSlug(cwdA);
+const slugB = projectSlug(cwdB);
+const bw1 = await call(alice, "brain_write", { note: "Chose SQLite-free JSON storage for the board.", section: "decision" });
+check("brain_write creates a new project file on first write", bw1.created === true, JSON.stringify(bw1));
+
+const br1 = await call(alice, "brain_read", {});
+check("brain_read returns the just-written decision", br1.content?.includes("Chose SQLite-free JSON storage"));
+
+const indexContent = fs.readFileSync(path.join(brainRoot(), "MEMORY.md"), "utf8");
+check("MEMORY.md indexes the new project", indexContent.includes(`[[${bw1.slug}|`), bw1.slug);
+
+// Append-only: a second write must not clobber the first.
+const bw2 = await call(alice, "brain_write", { note: "Log entry: shipped brain_write tool." });
+check("second write to the same project does not re-create it", bw2.created === false);
+const br2 = await call(alice, "brain_read", {});
+check("append-only: original decision survives a second write", br2.content.includes("Chose SQLite-free JSON storage"));
+check("append-only: new log line is present", br2.content.includes("shipped brain_write tool"));
+
+// section:"status" behaves differently on purpose: it REPLACES, not appends.
+await call(alice, "brain_write", { note: "First status: brain.js written.", section: "status" });
+await call(alice, "brain_write", { note: "Second status: server.js wired in.", section: "status" });
+const br3 = await call(alice, "brain_read", {});
+check("status write replaces the previous status", !br3.content.includes("First status: brain.js written"));
+check("status write keeps the latest status", br3.content.includes("Second status: server.js wired in"));
+check("replacing status does not touch Key Decisions", br3.content.includes("Chose SQLite-free JSON storage"));
+check("replacing status does not touch the Log", br3.content.includes("shipped brain_write tool"));
+
+// coop_status surfaces project_memory once this project has notes, status first.
+const statusWithMemory = await call(alice, "coop_status");
+check("coop_status surfaces project_memory for a project with notes", Boolean(statusWithMemory.project_memory));
+check("project_memory preview includes the current status",
+  statusWithMemory.project_memory?.preview?.includes("Second status: server.js wired in"));
+check("project_memory shows status before decisions/log",
+  statusWithMemory.project_memory?.preview?.indexOf("Second status") <
+    statusWithMemory.project_memory?.preview?.indexOf("Chose SQLite-free"));
+
+// brain_search: scoped to one project by default, using the collision-safe-slug
+// pair from the direct checks above -- cross-project search must be opt-in.
+await call(alice, "brain_write", { note: "note for team A backend", cwd: cwdA });
+await call(alice, "brain_write", { note: "note for team B backend", cwd: cwdB });
+const readA = await call(alice, "brain_read", { cwd: cwdA });
+const readB = await call(alice, "brain_read", { cwd: cwdB });
+check("teamA file does not contain teamB's note", !readA.content.includes("team B backend"));
+check("teamB file does not contain teamA's note", !readB.content.includes("team A backend"));
+
+// updateIndex() must be additive, never destructive: a naive "treat any read
+// failure as ENOENT" bug would reset MEMORY.md to just the newest entry and
+// silently wipe every earlier project's line.
+const indexAfterThree = fs.readFileSync(path.join(brainRoot(), "MEMORY.md"), "utf8");
+check("MEMORY.md keeps every project's entry, not just the newest",
+  indexAfterThree.includes(`[[${bw1.slug}|`) && indexAfterThree.includes(`[[${slugA}|`) && indexAfterThree.includes(`[[${slugB}|`));
+
+const scopedToA = await call(alice, "brain_search", { query: "team A backend", cwd: cwdA });
+check("brain_search scoped to a project finds only that project",
+  scopedToA.hits.length > 0 && scopedToA.hits.every((h) => h.slug === slugA));
+
+const scopedToB = await call(alice, "brain_search", { query: "team A backend", cwd: cwdB });
+check("brain_search scoped to a different project does not find a note that lives elsewhere",
+  scopedToB.hits.length === 0);
+
+const searchAll = await call(alice, "brain_search", { query: "team A backend", all_projects: true });
+check("brain_search with all_projects:true finds the right project across the whole brain",
+  searchAll.hits.some((h) => h.slug === slugA));
+
 // Board lifecycle.
 const posted = await call(alice, "board_post", { title: "Build order form", owner: "antigravity" });
 await call(bob, "board_update", { task_id: posted.task_id, status: "running", note: "started" });
@@ -175,6 +246,64 @@ check("coop_restart releases the caller's locks", !locksAfterRestart.some((p) =>
 check("coop_restart leaves other agents' locks alone", locksAfterRestart.some((p) => p.endsWith("bob-only.txt")));
 check("coop_restart leaves other agents' presence alone",
   Boolean(readBoard().presence["antigravity"]));
+
+// claim_paths' task_id is caller-supplied and never validated against a real
+// task, so a lock I hold directly can carry a task_id that names nothing in
+// my own running-task list. Gating release on "this lock has no task_id"
+// missed exactly that lock -- it must still be mine to release purely by
+// ownership, regardless of what task_id (if any) it happens to carry.
+await call(alice, "claim_paths", {
+  paths: [path.join(SANDBOX, "alice-stale-taskid.txt")],
+  note: "alice's, tagged with a task_id that names no real task",
+  task_id: "not-a-real-task-id",
+});
+await call(alice, "coop_restart", {});
+check("coop_restart releases my own lock even when its task_id matches no running task",
+  !readBoard().locks.some((l) => l.path.endsWith("alice-stale-taskid.txt")),
+  readBoard().locks.map((l) => l.path).join(",") || "none");
+
+// A delegated task's OWNER is a shared worker identity (e.g. "antigravity-agent")
+// that every agent delegating to that backend uses -- not unique per delegator.
+// coop_restart used to drop every lock/presence entry owned by that shared
+// identity just because ONE of my own tasks happened to run on it, even when a
+// completely different agent had its own separate task still running there.
+await mutateBoard((b) => {
+  const now = Date.now();
+  // pid: 0 -- coop_restart's kill loop guards on `t.pid && ...`, so a falsy
+  // pid short-circuits before ever calling isAlive/killTree. process.pid
+  // would be wrong here anyway: it's this TEST SCRIPT's own pid, not the
+  // server child process alice/bob actually run as, so coop_restart's
+  // "never kill myself" check (comparing against ITS OWN process.pid) would
+  // not have recognized it and would have genuinely killTree'd this test.
+  b.tasks.push(
+    { id: "shared-mine", kind: "delegated", owner: "shared-worker", assignedBy: "claude",
+      status: "running", pid: 0, title: "alice's job", cwd: SANDBOX, created: now, updated: now },
+    { id: "shared-theirs", kind: "delegated", owner: "shared-worker", assignedBy: "antigravity",
+      status: "running", pid: 0, title: "bob's job", cwd: SANDBOX, created: now, updated: now }
+  );
+  b.locks.push(
+    { path: path.join(SANDBOX, "mine.txt"), owner: "shared-worker", taskId: "shared-mine", created: now },
+    { path: path.join(SANDBOX, "theirs.txt"), owner: "shared-worker", taskId: "shared-theirs", created: now }
+  );
+  b.presence["shared-worker"] = { status: "working", detail: "bob's job", ts: now };
+});
+await call(alice, "coop_restart", {});
+const afterShared = readBoard();
+check("coop_restart cancels only my own task on a shared worker",
+  afterShared.tasks.find((t) => t.id === "shared-mine")?.status === "cancelled");
+check("coop_restart leaves another agent's task on the same shared worker running",
+  afterShared.tasks.find((t) => t.id === "shared-theirs")?.status === "running");
+check("coop_restart releases only my own lock on the shared worker",
+  !afterShared.locks.some((l) => l.taskId === "shared-mine"));
+check("coop_restart leaves the other agent's lock on the same shared worker",
+  afterShared.locks.some((l) => l.taskId === "shared-theirs"));
+check("coop_restart does not delete a shared worker's presence while another task still uses it",
+  Boolean(afterShared.presence["shared-worker"]));
+await mutateBoard((b) => {
+  b.tasks = b.tasks.filter((t) => !["shared-mine", "shared-theirs"].includes(t.id));
+  b.locks = b.locks.filter((l) => !["shared-mine", "shared-theirs"].includes(l.taskId));
+  delete b.presence["shared-worker"];
+});
 
 const restartToolWipe = await call(alice, "coop_restart", { reset_board: true });
 check("coop_restart with reset_board works", restartToolWipe.restarted === true && restartToolWipe.reset_board === true);
@@ -352,6 +481,45 @@ const expired = { ...emptyBoard, limits: {} };
 for (const o of allOwners) expired.limits[o] = { kind: "limit", resets_at: new Date(Date.now() - 1000).toISOString() };
 check("pickFailover ignores an expired limit", Boolean(pickFailover(expired, [])));
 
+// --- brain: durable, cross-project memory ---
+
+// Bug regression pin: writeBrainNote is a real async function using the real
+// lock (createLock/acquire), not a nonexistent sync lock -- this simply
+// resolving at all is most of the proof.
+const truncCwd = path.join(SANDBOX, "workspaces", "trunc-test");
+const longNote = "x".repeat(2500);
+const wTrunc = await writeBrainNote({ cwd: truncCwd, note: longNote, agent: "test" });
+check("writeBrainNote resolves (real async lock)", wTrunc.created === true);
+check("writeBrainNote flags truncation on a too-long note", wTrunc.truncated === true);
+const rTrunc = readBrainNote({ cwd: truncCwd });
+check("long note is capped in storage, not stored in full", rTrunc.content.length < longNote.length);
+check("truncation is announced in the stored text, not silently cut", /truncated/i.test(rTrunc.content));
+
+// Collision-safe slugs: two different cwds sharing the same basename must
+// never merge into one file -- "backend"/"api"/"web" are extremely common
+// repo names across a broad user base. (cwdA/cwdB/slugA/slugB were already
+// declared earlier, alongside the brain_write round-trip checks that also
+// need them.)
+check("same-basename cwds get different slugs", slugA !== slugB, `${slugA} vs ${slugB}`);
+check("both slugs still start with the shared basename", slugA.startsWith("backend-") && slugB.startsWith("backend-"));
+
+// An unusually long project directory name must not make the slug's file
+// path blow past Windows' ~260-char MAX_PATH -- the base gets capped, the
+// hash (from the full untruncated path) still keeps it collision-safe.
+const longDirName = "a".repeat(200);
+const longCwd = path.join(SANDBOX, "workspaces", longDirName);
+const longSlug = projectSlug(longCwd);
+check("an unusually long project name produces a short, safe slug", longSlug.length < 60, longSlug.length);
+const otherLongCwd = path.join(SANDBOX, "other", longDirName);
+check("two long, differently-pathed names with the same basename still get different slugs",
+  projectSlug(longCwd) !== projectSlug(otherLongCwd));
+
+// Omitted-field proof for coop_status's project_memory: a cwd with no notes
+// yet must produce null (not an empty object), so the server-side spread
+// omits the key entirely rather than sending an empty one.
+const freshCwd = path.join(SANDBOX, "workspaces", "never-written-to");
+check("brainPreview returns null for a project with no notes", brainPreview(freshCwd) === null);
+
 // With every backend limited there is nowhere to reroute to, so a delegate must
 // refuse -- WITHOUT spawning anything -- and say when it can be retried.
 const resetsAt = new Date(Date.now() + 3600_000).toISOString();
@@ -367,6 +535,25 @@ const blocked = await call(alice, `${lanes[0]}_delegate`, {
 check("delegate refuses when every backend is limited", Boolean(blocked.error), blocked.error || "no error");
 check("refusal says when to retry", Boolean(blocked.resets_in), blocked.resets_in || "none");
 check("refusal did not create a task", !readBoard().tasks.some((t) => t.title === "should not run"));
+await mutateBoard((b) => { b.limits = {}; });
+
+// alternatives must actually be OTHER backends, not the one that just
+// refused: `tried` holds owner strings, and comparing those against the
+// prefix strings BACKENDS_LIST.map(x => x.prefix) produces never matched,
+// so the exhausted backend always listed itself as its own alternative.
+const onlyOneOwner = BACKENDS_LIST[0].owner;
+await mutateBoard((b) => {
+  b.limits = { [onlyOneOwner]: { kind: "limit", resets_at: resetsAt, detail: "test" } };
+});
+const singleBlocked = await call(alice, `${lanes[0]}_delegate`, {
+  title: "should not run either", prompt: "x", cwd: process.cwd(), failover: false,
+});
+check("a refused backend does not list itself as its own alternative",
+  Array.isArray(singleBlocked.alternatives) && !singleBlocked.alternatives.includes(BACKENDS_LIST[0].prefix),
+  JSON.stringify(singleBlocked.alternatives));
+check("alternatives still lists genuinely available backends",
+  Array.isArray(singleBlocked.alternatives) && singleBlocked.alternatives.length > 0,
+  JSON.stringify(singleBlocked.alternatives));
 await mutateBoard((b) => { b.limits = {}; });
 
 // --- the office UI must never draw an active agent as idle ---

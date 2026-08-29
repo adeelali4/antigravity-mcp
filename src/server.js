@@ -25,7 +25,9 @@ import {
 } from "./store.js";
 import { isAlive, killTree } from "./proc.js";
 import { loadBackends, spawnBackend, recoverTask } from "./backends.js";
+import { briefingFor } from "./briefing.js";
 import { classifyFailure, localUsage, isExhausted, isExpired, untilReset } from "./limits.js";
+import { writeBrainNote, readBrainNote, searchBrain, brainPreview } from "./brain.js";
 
 /**
  * Every delegation target, loaded from the registry (built-in presets plus
@@ -326,7 +328,7 @@ async function reap(id) {
   if (t.kind !== "delegated" || !["running", "queued"].includes(t.status)) return t;
 
   const backend = backendFor(t.owner);
-  const payload = backend?.readResult(id);
+  const payload = backend?.readResult(id, t.pid);
   if (payload) {
     const settled = await mutate((b) => {
       const task = b.tasks.find((x) => x.id === id);
@@ -533,7 +535,10 @@ async function delegateTask({
       resets_in: eta || undefined,
       // Only listed when nothing could be rerouted to -- otherwise the reroute
       // already happened and naming alternatives is dead weight in the reply.
-      alternatives: BACKENDS_LIST.map((x) => x.prefix).filter((x) => !tried.includes(x)),
+      // `tried` holds owner strings ("antigravity-agent"); filter by owner,
+      // not prefix ("ag") -- comparing the two never matched, so the backend
+      // that just refused the work always listed itself as an alternative.
+      alternatives: BACKENDS_LIST.filter((x) => !tried.includes(x.owner)).map((x) => x.prefix),
       next: eta ? `Every other backend is busy or limited too. Retry in ${eta}.` : "No other backend can take this right now.",
     };
   }
@@ -601,35 +606,6 @@ async function delegateTask({
   };
 }
 
-/**
- * Prepended to every delegated brief. Each line below is here because its
- * absence costs real tokens or real rework: a delegate that gold-plates a
- * one-file fix burns a whole session on work nobody asked for, one that
- * reports "done" without checking sends the delegator off to verify from
- * scratch, and one that stops silently strands the task with no way to pick
- * it up. Kept deliberately short -- it is paid on every single delegation,
- * and padding it would contradict the last rule in it.
- */
-const WORKING_AGREEMENT =
-  `HOW TO WORK THIS TASK\n` +
-  `- Scope: do what was asked and stop. Spot something else worth doing? Report it, don't fix it.\n` +
-  `- Decide and act: the files listed as yours are yours to edit. Don't stop to ask permission.\n` +
-  `- Verify before you claim done: run the build, test, or command that proves it. Unchecked is not done.\n` +
-  `- Stuck or out of room? Say what you did, what's left, and what you learned, so it can be handed off.\n` +
-  `- Your final message IS the handoff: what changed, where, what to check. No narration, no transcript.\n`;
-
-function briefingFor(owner, cwd, claim, prompt) {
-  return (
-    `PROJECT ROOT: ${cwd}\n` +
-    `Do all work inside that directory using absolute paths. Do not create a scratch project elsewhere.\n` +
-    `You are the '${owner}' agent working in parallel with another AI agent on this project. ` +
-    `It has assigned you the task below and is working on other parts of the codebase at the same time.\n` +
-    (claim.length ? `PATHS RESERVED FOR YOU: ${claim.join(", ")}\n` : "") +
-    `If the coordination MCP server is available to you, call coop_status first and ` +
-    `claim_paths before editing; stay off paths another agent holds.\n\n` +
-    `${WORKING_AGREEMENT}\n--- TASK ---\n${prompt}`
-  );
-}
 
 async function followupTask({ owner, task_id, prompt, spawn, buildExtra }) {
   const parent = await reap(task_id);
@@ -957,6 +933,11 @@ export async function buildServer() {
       const recentActivity = b.events.slice(-6).reverse().map((e) => ({
         agent: e.agent, kind: e.kind, detail: e.detail, when: ago(e.ts),
       }));
+      // A brand-new session, with none of a prior one's context, gets this on
+      // its very first call -- coop_status is already required "before
+      // starting work" -- so it learns where THIS project currently stands
+      // without needing to have been told or to infer it from history.
+      const memory = brainPreview(process.cwd());
       return ok({
         you_are: AGENT,
         seq: b.seq,
@@ -980,6 +961,7 @@ export async function buildServer() {
           })),
         }),
         ...(recentActivity.length && { recent_activity: recentActivity }),
+        ...(memory && { project_memory: memory }),
         ...(identityCollision && {
           identity_collision: {
             agent: AGENT, your_pid: process.pid, your_cwd: process.cwd(),
@@ -1322,6 +1304,75 @@ export async function buildServer() {
   );
 
   server.registerTool(
+    "brain_write",
+    {
+      title: "Save to durable project memory",
+      description:
+        "Append a note to this project's durable memory -- plain markdown that survives every " +
+        "board reset, unlike notes and the board's own history. Use section:\"status\" to say " +
+        "where the project stands RIGHT NOW; the next session that connects reads it with zero " +
+        "prior context, via coop_status's project_memory field or brain_read. Replaces the " +
+        "previous status rather than piling up, since only the latest is useful. Use " +
+        "section:\"decision\" for a rare, curated architectural call. Default \"log\" appends a " +
+        "timestamped entry and never overwrites or truncates existing content.",
+      inputSchema: {
+        note: z.string(),
+        cwd: z.string().optional().describe("Defaults to your own current working directory"),
+        section: z.enum(["log", "decision", "status"]).optional(),
+      },
+    },
+    async ({ note, cwd, section = "log" }) => {
+      const result = await writeBrainNote({ cwd: cwd || process.cwd(), note, agent: AGENT, section });
+      return ok(result);
+    }
+  );
+
+  server.registerTool(
+    "brain_read",
+    {
+      title: "Read this project's durable memory",
+      description:
+        "Read this project's full durable memory -- current status, key decisions, and the " +
+        "complete timestamped log, unaffected by any board reset. content is null if nothing " +
+        "has been written yet for this project.",
+      inputSchema: {
+        cwd: z.string().optional().describe("Defaults to your own current working directory"),
+      },
+    },
+    async ({ cwd } = {}) => {
+      const note = readBrainNote({ cwd: cwd || process.cwd() });
+      return ok(note ?? { content: null });
+    }
+  );
+
+  server.registerTool(
+    "brain_search",
+    {
+      title: "Search this project's durable memory",
+      description:
+        "Plain substring search over durable memory. Defaults to THIS project only, the same " +
+        "scope brain_write/brain_read use -- being in one project shouldn't surface another, " +
+        "unrelated one unasked. Pass cwd to search a specific other project, or all_projects:true " +
+        "to search across every project this brain knows about, for 'have we solved this before, " +
+        "anywhere.' Returns capped results with short surrounding snippets.",
+      inputSchema: {
+        query: z.string(),
+        limit: z.number().int().optional(),
+        cwd: z.string().optional().describe("Defaults to your own current working directory"),
+        all_projects: z.boolean().optional().describe("Search every project's memory instead of just this one"),
+      },
+    },
+    async ({ query, limit, cwd, all_projects }) => {
+      const hits = searchBrain(query, {
+        ...(limit && { limit }),
+        cwd: cwd || process.cwd(),
+        allProjects: Boolean(all_projects),
+      });
+      return ok({ count: hits.length, scope: all_projects ? "all" : "project", hits });
+    }
+  );
+
+  server.registerTool(
     "presence_set",
     {
       title: "Announce what you are doing",
@@ -1428,16 +1479,30 @@ export async function buildServer() {
 
       const out = await mutate((b) => {
         const ids = new Set(mine.map((t) => t.id));
-        const owners = new Set([AGENT, ...mine.map((t) => t.owner)]);
         for (const t of b.tasks || []) {
           if (!ids.has(t.id)) continue;
           t.status = "cancelled";
           t.updated = Date.now();
         }
+        // Mine to release: anything I hold directly (owner === AGENT, whatever
+        // its taskId says -- claim_paths' task_id is caller-supplied and
+        // unvalidated, so a lock can carry a task_id that names no delegated
+        // task of mine at all; gating release on "no taskId" missed exactly
+        // that case), plus anything tied to one of my own cancelled tasks
+        // even where a shared WORKER identity holds it (e.g. "antigravity-agent").
+        // NOT mine: a lock under that same shared identity for a DIFFERENT
+        // agent's still-running task -- that's what ids.has(), not owner
+        // alone, has to gate for worker-owned locks.
         const before = (b.locks || []).length;
-        b.locks = (b.locks || []).filter((l) => !ids.has(l.taskId) && !owners.has(l.owner));
+        b.locks = (b.locks || []).filter((l) => !(l.owner === AGENT || ids.has(l.taskId)));
         const released = before - b.locks.length;
-        for (const owner of owners) delete b.presence[owner];
+        // Same reasoning for presence: a worker identity's presence reflects
+        // whatever it's currently doing across EVERYONE who delegates to it,
+        // not just me. settlePresence() already knows how to drop it only
+        // when nothing else is still running there -- reuse it instead of
+        // deleting unconditionally.
+        delete b.presence[AGENT];
+        for (const t of mine) settlePresence(b, t.owner, t.id);
         logEvent(b, AGENT, "board.restart", `${ids.size} task(s) cancelled, ${released} lock(s) released`);
         return { cancelled: ids.size, released };
       });

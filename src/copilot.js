@@ -2,7 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { HOME, runsDir } from "./store.js";
+import { HOME, outPath } from "./store.js";
 import { WIN, findBinary, standardCandidates } from "./proc.js";
 
 export { isAlive, killTree } from "./proc.js";
@@ -28,10 +28,6 @@ export function findCopilot({ required = true } = {}) {
   });
   return found ? (cached = found) : null;
 }
-
-export const outPath = (id) => path.join(runsDir(), `${id}.json`);
-export const errPath = (id) => path.join(runsDir(), `${id}.err`);
-export const promptPath = (id) => path.join(runsDir(), `${id}.prompt.txt`);
 
 /**
  * copilot --output-format json emits JSONL (one event per line), terminated by
@@ -82,12 +78,4 @@ export function readResult(id) {
     conversation_id: resultEvent.sessionId,
     usage: resultEvent.usage,
   };
-}
-
-export function readStderr(id) {
-  try {
-    return fs.readFileSync(errPath(id), "utf8").slice(-4000);
-  } catch {
-    return "";
-  }
 }

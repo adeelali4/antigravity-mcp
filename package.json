@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-server",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Run several AI coding CLIs on one repo at once. Any agent (Claude Code, Cursor, Copilot, Codex, Gemini, OpenCode, Antigravity) can delegate work to any other, with path locking so they never overwrite each other, automatic failover when one hits its usage limit, and a live pixel-art office dashboard. Works on Windows, macOS and Linux.",
   "type": "module",
   "bin": {

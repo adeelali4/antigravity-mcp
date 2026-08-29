@@ -8,6 +8,7 @@ import { read, mutate, ago, norm, overlaps, logEvent, nextId, taskId, ensureDirs
 import { isAlive, killTree } from "./proc.js";
 import { loadBackends, spawnBackend, outPath, errPath, promptPath, recoverTask } from "./backends.js";
 import { classifyFailure, untilReset } from "./limits.js";
+import { briefingFor } from "./briefing.js";
 
 const ACTOR = process.env.COOP_AGENT || process.env.USER || process.env.USERNAME || "human";
 
@@ -150,7 +151,7 @@ export async function delegateFromCli({ backend, prompt, title, cwd = process.cw
 
   let pid;
   try {
-    pid = spawnBackend(spec, id, prompt, {
+    pid = spawnBackend(spec, id, briefingFor(spec.owner, targetCwd, claimPaths, prompt), {
       cwd: targetCwd,
       model,
       effort,
@@ -390,7 +391,7 @@ export async function reassignFromCli({ taskIdArg, toBackend, note }) {
 
   let pid;
   try {
-    pid = spawnBackend(spec, newId, prompt, { cwd, autoApprove: true });
+    pid = spawnBackend(spec, newId, briefingFor(spec.owner, cwd, claim, prompt), { cwd, autoApprove: true });
   } catch (e) {
     console.error(`\n  Failed to spawn ${spec.label}: ${e.message}\n`);
     return 1;

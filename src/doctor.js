@@ -9,6 +9,7 @@ import { findAgy } from "./agy.js";
 import { loadBackends } from "./backends.js";
 import { launchSpec } from "./proc.js";
 import { stateDir, mutate } from "./store.js";
+import { brainRoot } from "./brain.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +67,9 @@ export async function doctor({ probe = false } = {}) {
     add("shared board", FAIL, `${stateDir()} — ${e.message} — run: antigravity-mcp-server reset --yes`);
   }
 
+  const brainSource = process.env.ANTIGRAVITY_MCP_BRAIN ? "ANTIGRAVITY_MCP_BRAIN" : "default";
+  add("brain", PASS, `${brainRoot()} (${brainSource})`);
+
   const uiDist = path.join(HERE, "..", "ui-dist", "index.html");
   add(
     "ui build",
@@ -77,7 +81,14 @@ export async function doctor({ probe = false } = {}) {
     if (!fs.existsSync(c.file)) continue;
     let registered = false;
     try {
-      registered = Boolean(JSON.parse(fs.readFileSync(c.file, "utf8") || "{}")[c.key]?.[serverKey(c)]);
+      const raw = fs.readFileSync(c.file, "utf8");
+      // Codex's config is TOML, not JSON -- JSON.parse on it always throws,
+      // which the catch below swallowed silently, so Codex reported
+      // "not registered" even when init.js had written it correctly. Match
+      // the same substring check init.js's own dry-run path already uses.
+      registered = c.format === "toml"
+        ? raw.includes(`[${c.key}.${serverKey(c)}]`)
+        : Boolean(JSON.parse(raw || "{}")[c.key]?.[serverKey(c)]);
     } catch { /* unparseable config */ }
     add(`client: ${c.label}`, registered ? PASS : WARN, registered ? "registered" : "config found, server not registered — run: antigravity-mcp-server init");
   }
