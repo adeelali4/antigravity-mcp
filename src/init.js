@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CLIENTS, AGY_SETTINGS, serverKey, entryFor } from "./clients.js";
 import { findAgy } from "./agy.js";
+import { upsertSkillBlock, hasSkillBlock } from "./skill.js";
 
 const WIN = process.platform === "win32";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -61,7 +62,7 @@ function launcher(mode) {
     : { command: process.execPath, args: [CLI] };
 }
 
-function readJson(file) {
+export function readJson(file) {
   try {
     const raw = fs.readFileSync(file, "utf8").trim();
     return raw ? JSON.parse(raw) : {};
@@ -71,12 +72,12 @@ function readJson(file) {
   }
 }
 
-function writeJson(file, data) {
+export function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
 }
 
-function backup(file) {
+export function backup(file) {
   if (!fs.existsSync(file) || fs.statSync(file).size === 0) return null;
   const dest = `${file}.bak-antigravity-mcp`;
   fs.copyFileSync(file, dest);
@@ -155,7 +156,64 @@ function writeTomlServer(file, table, name, command, args) {
   return existed;
 }
 
-export function init({ dryRun = false, launchMode = "auto", only = null, all = false } = {}) {
+export function readText(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return "";
+    throw e;
+  }
+}
+
+/**
+ * Write the managed "skill" block (skill.js) into every detected client's global
+ * instructions file. Registering the MCP server only makes the tools callable;
+ * this is what keeps the agent knowing what they are for across sessions.
+ *
+ * Several client entries point at the same file (~/.gemini/GEMINI.md is shared by
+ * gemini-cli and both Antigravity surfaces), so paths are deduped and written
+ * once. The block is idempotent -- re-running replaces it in place.
+ */
+export function installSkill({ dryRun = false, only = null, all = false } = {}) {
+  const byFile = new Map();
+  for (const client of CLIENTS) {
+    if (!client.memoryFile) continue;
+    if (only && !only.includes(client.id)) continue;
+    const present = fs.existsSync(client.file) || fs.existsSync(path.dirname(client.file));
+    if (!present && !all) continue;
+    const entry = byFile.get(client.memoryFile) || { file: client.memoryFile, clients: [] };
+    entry.clients.push(client.label);
+    byFile.set(client.memoryFile, entry);
+  }
+
+  const results = [];
+  for (const { file, clients } of byFile.values()) {
+    try {
+      const fileExisted = fs.existsSync(file);
+      const existing = readText(file);
+      const updated = upsertSkillBlock(existing);
+      const verb = !fileExisted ? "create" : hasSkillBlock(existing) ? "update" : "add";
+      if (updated === existing) {
+        results.push({ file, clients, status: "unchanged", detail: "block already current" });
+        continue;
+      }
+      if (dryRun) {
+        results.push({ file, clients, status: `would ${verb}`, detail: file });
+        continue;
+      }
+      backup(file);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, updated);
+      const past = { create: "created", update: "updated", add: "added" }[verb];
+      results.push({ file, clients, status: past, detail: file });
+    } catch (e) {
+      results.push({ file, clients, status: "error", detail: e.message });
+    }
+  }
+  return { results };
+}
+
+export function init({ dryRun = false, launchMode = "auto", only = null, all = false, skill = true } = {}) {
   const { command, args } = launcher(launchMode);
   const results = [];
 
@@ -220,7 +278,9 @@ export function init({ dryRun = false, launchMode = "auto", only = null, all = f
   const agyFound = Boolean(findAgy({ required: false }));
   const permission = agyFound ? allowAgyMcp({ dryRun }) : { ok: false, detail: "agy not installed" };
 
-  return { command, args, results, agyFound, permission };
+  const skillRes = skill ? installSkill({ dryRun, only, all }) : null;
+
+  return { command, args, results, agyFound, permission, skill: skillRes };
 }
 
 export function printInit(res) {
@@ -234,6 +294,19 @@ export function printInit(res) {
   console.log(
     `\n  agy permission rule: ${res.permission.ok ? "ok" : "NOT SET"} — ${res.permission.detail}`
   );
+
+  if (res.skill) {
+    console.log("\n  skill — managed instructions block in each CLI's global memory:");
+    if (!res.skill.results.length) {
+      console.log("    (no client with a global instructions file detected)");
+    }
+    for (const r of res.skill.results) {
+      const mark = r.status === "error" ? "x" : r.status === "unchanged" ? "-" : "+";
+      console.log(`    ${mark} ${r.status.padEnd(12)} ${r.file}  [${r.clients.join(", ")}]`);
+    }
+    console.log("    Re-run init to refresh it; pass --no-skill to skip. Remove it by deleting the marked block.");
+  }
+
   if (!res.agyFound) {
     console.log(
       "\n  ! Antigravity CLI (agy) was not found, so delegation will fail.\n" +

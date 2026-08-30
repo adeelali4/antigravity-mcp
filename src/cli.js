@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { runStdio } from "./server.js";
 import { init, printInit } from "./init.js";
+import { deinit, printDeinit } from "./deinit.js";
 import { update, printUpdate } from "./update.js";
 import { doctor, printDoctor } from "./doctor.js";
 import { reset, printReset } from "./reset.js";
@@ -51,7 +52,10 @@ const HELP = `
     antigravity-mcp-server                 Run the MCP server on stdio (how clients launch it)
     antigravity-mcp-server ui              Open the office visualization (agents, tasks, board)
     antigravity-mcp-server restart         Restart coordination state, kill stale UI/workers, clean board
-    antigravity-mcp-server init            Register the server into every MCP client found
+    antigravity-mcp-server init            Register the server into every MCP client found,
+                                           and teach each one about it via its global memory file
+    antigravity-mcp-server deinit          Undo init: unregister the server and remove the memory
+                                           block from every client. Run before npm uninstall.
     antigravity-mcp-server doctor          Check that every link in the chain works
     antigravity-mcp-server update          Update globally-installed server to latest version
     antigravity-mcp-server reset           Wipe the shared board to recover from stuck state
@@ -83,9 +87,16 @@ const HELP = `
   init options
     --dry-run                 Show what would change, write nothing
     --all                     Also write configs for clients that are not installed
+    --no-skill                Skip the managed instructions block in each CLI's global memory file
     --only <ids>              Comma-separated client ids (e.g. claude-code,cursor)
     --global | --npx | --local  Force the launch form written into configs
                                (default: auto-detects a global install, else npx)
+
+  deinit options
+    --dry-run                 Show what would be removed, write nothing
+    --skill-only              Only remove the memory block; leave MCP registration in place
+    --all                     Also check clients that are not installed
+    --only <ids>              Comma-separated client ids
 
   doctor options
     --probe         Also run a live agy round trip (slower, uses agy quota)
@@ -253,9 +264,31 @@ async function main() {
           dryRun: has("--dry-run"),
           all: has("--all"),
           only: only ? only.split(",").map((s) => s.trim()) : null,
+          skill: !has("--no-skill"),
           launchMode: has("--global") ? "global" : has("--npx") ? "npx" : has("--local") ? "local" : "auto",
         })
       );
+      return;
+    }
+    case "deinit":
+    case "unregister": {
+      const only = valueOf("--only");
+      const silent = has("--silent");
+      try {
+        const res = deinit({
+          dryRun: has("--dry-run"),
+          all: has("--all"),
+          only: only ? only.split(",").map((s) => s.trim()) : null,
+          skillOnly: has("--skill-only"),
+        });
+        if (silent) return; // preuninstall best-effort: never block an uninstall
+        process.exitCode = printDeinit(res);
+      } catch (e) {
+        if (!silent) {
+          console.error(`deinit: ${e.message}`);
+          process.exitCode = 1;
+        }
+      }
       return;
     }
     case "update": {

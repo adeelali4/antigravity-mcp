@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CLIENTS, AGY_SETTINGS, serverKey } from "./clients.js";
+import { hasSkillBlock } from "./skill.js";
 import { findAgy } from "./agy.js";
 import { loadBackends } from "./backends.js";
 import { launchSpec } from "./proc.js";
@@ -91,6 +92,29 @@ export async function doctor({ probe = false } = {}) {
         : Boolean(JSON.parse(raw || "{}")[c.key]?.[serverKey(c)]);
     } catch { /* unparseable config */ }
     add(`client: ${c.label}`, registered ? PASS : WARN, registered ? "registered" : "config found, server not registered — run: antigravity-mcp-server init");
+  }
+
+  // The managed instructions block: check only files whose client is actually
+  // present, deduped (GEMINI.md is shared). Missing is a WARN, not a FAIL --
+  // coordination still works, the agent just is not reminded what it is for.
+  const memoryFiles = new Map();
+  for (const c of CLIENTS) {
+    if (!c.memoryFile) continue;
+    if (!(fs.existsSync(c.file) || fs.existsSync(path.dirname(c.file)))) continue;
+    memoryFiles.set(c.memoryFile, true);
+  }
+  const memList = [...memoryFiles.keys()];
+  const missing = memList.filter((f) => {
+    try { return !hasSkillBlock(fs.readFileSync(f, "utf8")); } catch { return true; }
+  });
+  if (memList.length) {
+    add(
+      "skill blocks",
+      missing.length ? WARN : PASS,
+      missing.length
+        ? `${memList.length - missing.length}/${memList.length} global memory files have the block — run: antigravity-mcp-server init`
+        : `present in all ${memList.length} global memory files`
+    );
   }
 
   if (probe && agy) {

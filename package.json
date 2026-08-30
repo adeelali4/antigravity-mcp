@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-server",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "Run several AI coding CLIs on one repo at once. Any agent (Claude Code, Cursor, Copilot, Codex, Gemini, OpenCode, Antigravity) can delegate work to any other, with path locking so they never overwrite each other, automatic failover when one hits its usage limit, and a live pixel-art office dashboard. Works on Windows, macOS and Linux.",
   "type": "module",
   "bin": {
@@ -19,11 +19,13 @@
   "scripts": {
     "start": "node src/cli.js",
     "doctor": "node src/cli.js doctor",
+    "deinit": "node src/cli.js deinit",
     "ui": "node src/cli.js ui",
     "test": "node test/smoke.js",
     "ui:build": "cd ui && npm install && npm run build",
     "prepare": "node -e \"if(!require('fs').existsSync('ui-dist/index.html'))require('child_process').execSync('npm run ui:build',{stdio:'inherit'})\"",
-    "prepublishOnly": "npm run ui:build"
+    "prepublishOnly": "npm run ui:build",
+    "preuninstall": "node src/cli.js deinit --silent"
   },
   "keywords": [
     "mcp",

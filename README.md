@@ -67,7 +67,7 @@ npm install -g antigravity-mcp-server
 antigravity-mcp-server init
 ```
 
-`init` looks at your machine, finds every tool from step 1 that's actually installed, and registers this server into each one automatically — nothing to configure by hand.
+`init` looks at your machine, finds every tool from step 1 that's actually installed, and registers this server into each one automatically — nothing to configure by hand. It also drops a short, self-refreshing note into each tool's global instructions file (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, `~/.codex/AGENTS.md`, and the like) so the agent keeps knowing what this server is and reaches for it on its own. Pass `--no-skill` to skip that part.
 
 **Step 3 — start a new session.** Close and reopen whichever tool(s) you use (a new terminal window, a fresh chat, whatever "restart" means for that tool). A session that was already open won't see the new server until it restarts.
 
@@ -80,6 +80,7 @@ You'll mostly only ever need the first two.
 | Command | What it does |
 |---|---|
 | `antigravity-mcp-server init` | Find your AI tools and wire them all up. Run again whenever you install a new one. |
+| `antigravity-mcp-server deinit` | Undo `init` everywhere — run this **before** `npm uninstall`. |
 | `antigravity-mcp-server restart` | Restart coordination state, terminate hanging UI/workers, and refresh board & clients |
 | `antigravity-mcp-server ui` | Open the live office dashboard in your browser |
 | `antigravity-mcp-server doctor` | Check everything works, and show which AI CLIs are installed |
@@ -463,6 +464,15 @@ If an identity's status looks permanently stuck, or the board seems to be carryi
 
 `init` only touches tools it finds, and backs up any file it edits to `<file>.bak-antigravity-mcp`.
 
+Alongside the MCP config, `init` writes a marker-delimited managed block
+(`<!-- BEGIN antigravity-mcp-server … -->` … `<!-- END antigravity-mcp-server -->`) into
+each tool's global instructions file — `~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`
+(shared by Gemini CLI and Antigravity), `~/.codex/AGENTS.md`, `~/.config/opencode/AGENTS.md`,
+`~/.codeium/windsurf/memories/global_rules.md`. Re-running `init` replaces the block in
+place; delete the block to remove it, or run `init --no-skill` to leave these files
+untouched. Tools with no stable global instructions file (Cursor, Claude Desktop, VS Code)
+rely on the server's MCP `instructions` string instead.
+
 | Tool | Config path | Key |
 |---|---|---|
 | Claude Code | `~/.claude.json` | `mcpServers` |
@@ -480,12 +490,24 @@ You can also run these variations:
 ```bash
 antigravity-mcp-server init --dry-run   # show changes, write nothing
 antigravity-mcp-server init --all       # also write configs for tools you haven't installed
+antigravity-mcp-server init --no-skill  # register MCP config only, skip the global-memory block
 antigravity-mcp-server init --only claude-code,cursor
 antigravity-mcp-server init --global    # force the direct-command form
 antigravity-mcp-server init --npx       # force npx, even with a global install present
 ```
 
 A global install is worth the extra step over `npx`: your editor spawns this server on every session, and `npx` re-checks the registry on each launch and can silently pull a newer version mid-session — which matters here, since both agents need to speak the same board schema. A global install starts instantly and only changes version when you run `npm update -g` yourself. `init` detects a global install automatically and writes the direct command into every config; it only falls back to `npx` if it can't find one. No install (`npx antigravity-mcp-server init`) is fine if you just want to try it once.
+
+### Uninstalling
+
+npm v7+ deliberately runs **no** script when a package is removed, so `npm uninstall` can't clean up after itself. Run `deinit` first — it reverses everything `init` did: unregisters the server from every client config, strips the managed block from every global instructions file (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, …), and removes the agy permission rule.
+
+```bash
+antigravity-mcp-server deinit            # then:
+npm uninstall -g antigravity-mcp-server
+```
+
+`deinit --dry-run` previews it; `deinit --skill-only` removes just the instructions block and leaves the MCP registration alone. Every file it edits is backed up to `<file>.bak-antigravity-mcp` first. Package managers that still honour `preuninstall` (Yarn 1, pnpm with pre/post scripts enabled) run `deinit` automatically; npm does not. If the package is already gone, the block is plain text between `<!-- BEGIN antigravity-mcp-server … -->` and `<!-- END antigravity-mcp-server -->` markers — delete it by hand.
 
 ### Good to know
 

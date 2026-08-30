@@ -23,12 +23,16 @@ and already authenticated on the machine.
 
 ```bash
 npm install -g antigravity-mcp-server
-antigravity-mcp-server init      # detects installed AI tools and registers itself with each
+antigravity-mcp-server init      # registers itself with each installed AI tool + adds a
+                                 # self-refreshing usage note to each tool's global memory file
 antigravity-mcp-server doctor    # verifies every link in the chain
 ```
 
 `init` writes MCP config for Claude Code, Cursor, Windsurf, Gemini CLI, Claude Desktop,
 VS Code (Copilot), OpenCode, OpenAI Codex CLI, GitHub Copilot CLI, and Antigravity (CLI + IDE).
+
+Run `antigravity-mcp-server deinit` before `npm uninstall` to reverse all of that — npm v7+
+runs no uninstall script, so removal is not automatic.
 
 ## Core features
 

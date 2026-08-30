@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { printUpdate } from "../src/update.js";
+import { installSkill } from "../src/init.js";
+import { deinit } from "../src/deinit.js";
+import { upsertSkillBlock, stripSkillBlock, hasSkillBlock, SKILL_MARK_BEGIN, SKILL_MARK_END } from "../src/skill.js";
 import { restart, printRestart } from "../src/restart.js";
 import { lockFromCli, unlockFromCli, sendNoteFromCli, readNotesFromCli } from "../src/commands.js";
 import { read as readBoard, mutate as mutateBoard } from "../src/store.js";
@@ -640,6 +643,57 @@ console.log = origLog;
 check("update prompts for init", captured.includes("init"));
 check("update prompts for reset", captured.includes("reset --yes"));
 check("update prompts for restart", captured.includes("restart"));
+
+// --- init's managed "skill" block: idempotent insert/replace into a global memory file ---
+const blankInsert = upsertSkillBlock("");
+check("upsertSkillBlock into empty text emits a complete block",
+  blankInsert.startsWith(SKILL_MARK_BEGIN) && blankInsert.trimEnd().endsWith(SKILL_MARK_END));
+
+const prior = "# My global rules\n\nAlways write tests.\n";
+const withBlock = upsertSkillBlock(prior);
+check("upsertSkillBlock keeps the user's existing content", withBlock.startsWith(prior.trimEnd()));
+check("upsertSkillBlock appends the block once", withBlock.split(SKILL_MARK_BEGIN).length === 2);
+
+const twice = upsertSkillBlock(withBlock);
+check("upsertSkillBlock is idempotent (second run is a no-op)", twice === withBlock);
+check("upsertSkillBlock never stacks blocks", twice.split(SKILL_MARK_BEGIN).length === 2);
+
+// An edited block must be replaced in place, not duplicated.
+const staleBlock = `${SKILL_MARK_BEGIN}\nold outdated text\n${SKILL_MARK_END}`;
+const refreshed = upsertSkillBlock(`intro\n\n${staleBlock}\n\noutro\n`);
+check("upsertSkillBlock replaces a stale block in place", refreshed.split(SKILL_MARK_BEGIN).length === 2);
+check("upsertSkillBlock preserves text around the block",
+  refreshed.startsWith("intro") && refreshed.trimEnd().endsWith("outro"));
+check("upsertSkillBlock drops the stale body", !refreshed.includes("old outdated text"));
+
+check("stripSkillBlock removes the managed block", !hasSkillBlock(stripSkillBlock(withBlock)));
+check("stripSkillBlock keeps the user's content", stripSkillBlock(withBlock).includes("Always write tests."));
+
+// installSkill in dry-run must write nothing and dedupe files (GEMINI.md is
+// shared by gemini-cli + both Antigravity surfaces).
+const dry = installSkill({ dryRun: true, all: true });
+const OK_STATUS = new Set(["would create", "would add", "would update", "unchanged", "error"]);
+check("installSkill dry-run returns results", dry.results.length > 0, `${dry.results.length} files`);
+check("installSkill only reports known statuses in dry-run",
+  dry.results.every((r) => OK_STATUS.has(r.status)),
+  dry.results.map((r) => r.status).join(","));
+check("installSkill dedupes a shared memory file",
+  new Set(dry.results.map((r) => r.file)).size === dry.results.length);
+check("installSkill maps each file back to its clients",
+  dry.results.every((r) => Array.isArray(r.clients) && r.clients.length > 0));
+
+// deinit is the inverse: a full round-trip on text must restore the original.
+const roundTrip = stripSkillBlock(upsertSkillBlock(prior));
+check("install then remove restores the file", roundTrip.trim() === prior.trim(), JSON.stringify(roundTrip));
+
+const dryOut = deinit({ dryRun: true, all: true });
+const DEINIT_OK = new Set(["would remove", "not registered", "skipped", "error"]);
+check("deinit dry-run reports client removals", dryOut.results.every((r) => DEINIT_OK.has(r.status)),
+  dryOut.results.map((r) => r.status).join(","));
+check("deinit dry-run reports skill-block removals",
+  dryOut.skill.results.every((r) => ["would remove", "absent", "error"].includes(r.status)),
+  dryOut.skill.results.map((r) => r.status).join(","));
+check("deinit --skill-only skips MCP config", deinit({ dryRun: true, all: true, skillOnly: true }).results.length === 0);
 
 await alice.close();
 await bob.close();
