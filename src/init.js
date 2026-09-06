@@ -4,9 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { CLIENTS, AGY_SETTINGS, serverKey, entryFor } from "./clients.js";
+import { CLIENTS, AGY_SETTINGS, serverKey, entryFor, clientPresent } from "./clients.js";
 import { findAgy } from "./agy.js";
-import { upsertSkillBlock, hasSkillBlock } from "./skill.js";
+import { upsertSkillBlock, hasSkillBlock, MalformedBlockError } from "./skill.js";
+import { detectEol } from "./markerBlock.js";
+import { editManagedFile, editJsonFile } from "./fileEdit.js";
 
 const WIN = process.platform === "win32";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -62,106 +64,74 @@ function launcher(mode) {
     : { command: process.execPath, args: [CLI] };
 }
 
-export function readJson(file) {
-  try {
-    const raw = fs.readFileSync(file, "utf8").trim();
-    return raw ? JSON.parse(raw) : {};
-  } catch (e) {
-    if (e.code === "ENOENT") return {};
-    throw new Error(`${file} is not valid JSON (${e.message}); fix or move it, then re-run`);
-  }
-}
-
-export function writeJson(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
-}
-
-export function backup(file) {
-  if (!fs.existsSync(file) || fs.statSync(file).size === 0) return null;
-  const dest = `${file}.bak-antigravity-mcp`;
-  fs.copyFileSync(file, dest);
-  return dest;
-}
-
-/** agy auto-denies MCP tools in headless mode without an explicit allow-rule. */
-function allowAgyMcp({ dryRun }) {
-  const rule = "mcp(coop/*)";
-  let cfg;
-  try {
-    cfg = readJson(AGY_SETTINGS);
-  } catch (e) {
-    return { ok: false, detail: e.message };
-  }
-  cfg.permissions ||= {};
-  cfg.permissions.allow ||= [];
-  if (cfg.permissions.allow.includes(rule)) {
-    return { ok: true, detail: `already allow-listed (${rule})` };
-  }
-  cfg.permissions.allow.push(rule);
-  if (dryRun) return { ok: true, detail: `would add ${rule}` };
-  backup(AGY_SETTINGS);
-  writeJson(AGY_SETTINGS, cfg);
-  return { ok: true, detail: `added ${rule}` };
-}
-
 /** TOML basic string. Everything written here is a path or a flag, so this is enough. */
 function tomlString(v) {
   return JSON.stringify(String(v));
 }
 
 /**
- * Add or replace one `[<table>.<name>]` block in a TOML file.
- *
- * Codex is the only client that keeps its MCP registry in TOML, and pulling in
- * a TOML parser to edit a single block would be a dependency for one file. A
- * block edit covers the case that matters: find the block by its header, drop
- * it up to the next section header, then append a fresh one. Every byte
- * outside that block is preserved.
+ * Remove one `[<table>.<name>]` block (and any `[<table>.<name>.*]` sub-table)
+ * from TOML text, preserving the file's line endings and everything else.
+ * Returns `{ text, existed }`.
  */
-function writeTomlServer(file, table, name, command, args) {
-  let existing = "";
-  try {
-    existing = fs.readFileSync(file, "utf8");
-  } catch {
-    existing = "";
-  }
-
-  const header = `[${table}.${name}]`;
+export function stripTomlSection(existing, header) {
+  const eol = detectEol(existing || "\n");
+  const subPrefix = header.slice(0, -1) + "."; // "[table.name]" -> "[table.name."
   const out = [];
   let skipping = false;
   let existed = false;
-  for (const line of existing.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed === header) {
+  for (const line of (existing || "").split(/\r?\n/)) {
+    const t = line.trim();
+    if (t === header || (t.startsWith(subPrefix) && t.endsWith("]"))) {
       skipping = true;
       existed = true;
       continue;
     }
-    // Any other section header ends the block being replaced.
-    if (skipping && trimmed.startsWith("[")) skipping = false;
+    if (t.startsWith("[")) skipping = false; // any other section header ends the skip
     if (!skipping) out.push(line);
   }
+  const text = out.join(eol).replace(/\s+$/, "");
+  return { text: text ? text + eol : "", existed };
+}
 
+/**
+ * Add or replace one `[<table>.<name>]` block in TOML text. Codex is the only
+ * client on TOML, and a full parser would be a dependency for one file; a block
+ * edit that preserves every byte outside the block is enough. Returns
+ * `{ text, existed }`.
+ */
+export function upsertTomlSection(existing, table, name, command, args) {
+  const eol = detectEol(existing || "\n");
+  const header = `[${table}.${name}]`;
+  const { text: without, existed } = stripTomlSection(existing || "", header);
   const body = [
     header,
     `command = ${tomlString(command)}`,
     `args = [${args.map(tomlString).join(", ")}]`,
-    "",
-  ].join("\n");
-
-  const before = out.join("\n").replace(/\s+$/, "");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, (before ? before + "\n" + "\n" : "") + body);
-  return existed;
+  ].join(eol);
+  const before = without.replace(/\s+$/, "");
+  return { text: (before ? before + eol + eol : "") + body + eol, existed };
 }
 
-export function readText(file) {
+/** agy auto-denies MCP tools in headless mode without an explicit allow-rule. */
+async function allowAgyMcp({ dryRun, agySettings = AGY_SETTINGS }) {
+  const rule = "mcp(coop/*)";
   try {
-    return fs.readFileSync(file, "utf8");
+    let had = false;
+    const res = await editJsonFile(
+      agySettings,
+      (cfg) => {
+        cfg.permissions ||= {};
+        cfg.permissions.allow ||= [];
+        had = cfg.permissions.allow.includes(rule);
+        if (!had) cfg.permissions.allow.push(rule);
+      },
+      { dryRun }
+    );
+    if (res.status === "unchanged") return { ok: true, detail: `already allow-listed (${rule})` };
+    return { ok: true, detail: dryRun ? `would add ${rule}` : `added ${rule}` };
   } catch (e) {
-    if (e.code === "ENOENT") return "";
-    throw e;
+    return { ok: false, detail: e.message };
   }
 }
 
@@ -172,123 +142,121 @@ export function readText(file) {
  *
  * Several client entries point at the same file (~/.gemini/GEMINI.md is shared by
  * gemini-cli and both Antigravity surfaces), so paths are deduped and written
- * once. The block is idempotent -- re-running replaces it in place.
+ * once, each under its own lock and via an atomic replace.
  */
-export function installSkill({ dryRun = false, only = null, all = false } = {}) {
+export async function installSkill({ dryRun = false, only = null, all = false, clients = CLIENTS } = {}) {
   const byFile = new Map();
-  for (const client of CLIENTS) {
+  for (const client of clients) {
     if (!client.memoryFile) continue;
     if (only && !only.includes(client.id)) continue;
-    const present = fs.existsSync(client.file) || fs.existsSync(path.dirname(client.file));
-    if (!present && !all) continue;
+    if (!all && !clientPresent(client)) continue;
     const entry = byFile.get(client.memoryFile) || { file: client.memoryFile, clients: [] };
     entry.clients.push(client.label);
     byFile.set(client.memoryFile, entry);
   }
 
+  const WOULD = { create: "would create", add: "would add", update: "would update" };
+  const DONE = { create: "created", add: "added", update: "updated" };
   const results = [];
-  for (const { file, clients } of byFile.values()) {
+  for (const { file, clients: labels } of byFile.values()) {
     try {
-      const fileExisted = fs.existsSync(file);
-      const existing = readText(file);
-      const updated = upsertSkillBlock(existing);
-      const verb = !fileExisted ? "create" : hasSkillBlock(existing) ? "update" : "add";
-      if (updated === existing) {
-        results.push({ file, clients, status: "unchanged", detail: "block already current" });
-        continue;
-      }
-      if (dryRun) {
-        results.push({ file, clients, status: `would ${verb}`, detail: file });
-        continue;
-      }
-      backup(file);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, updated);
-      const past = { create: "created", update: "updated", add: "added" }[verb];
-      results.push({ file, clients, status: past, detail: file });
+      let verb = null;
+      await editManagedFile(
+        file,
+        (cur) => {
+          const before = cur ?? "";
+          const next = upsertSkillBlock(before); // throws MalformedBlockError on a torn block
+          if (next === before) return undefined;
+          verb = cur === null ? "create" : hasSkillBlock(before) ? "update" : "add";
+          return next;
+        },
+        { dryRun }
+      );
+      results.push({
+        file,
+        clients: labels,
+        status: verb ? (dryRun ? WOULD : DONE)[verb] : "unchanged",
+        detail: verb ? file : "block already current",
+      });
     } catch (e) {
-      results.push({ file, clients, status: "error", detail: e.message });
+      const detail =
+        e instanceof MalformedBlockError
+          ? `${e.message} (left untouched)`
+          : e.message;
+      results.push({ file, clients: labels, status: "error", detail });
     }
   }
   return { results };
 }
 
-export function init({ dryRun = false, launchMode = "auto", only = null, all = false, skill = true } = {}) {
+async function registerClient(client, command, args, dryRun) {
+  const key = serverKey(client);
+  const agentId = client.workerAgent || client.id;
+  const fullArgs = [...args, "--agent", agentId];
+
+  if (client.format === "toml") {
+    let existed = false;
+    const res = await editManagedFile(
+      client.file,
+      (cur) => {
+        const { text, existed: e } = upsertTomlSection(cur ?? "", client.key, key, command, fullArgs);
+        existed = e;
+        return text === (cur ?? "") ? undefined : text;
+      },
+      { dryRun }
+    );
+    const status = res.status === "unchanged" ? "unchanged" : dryRun ? (existed ? "would update" : "would add") : existed ? "updated" : "added";
+    return { client: client.label, status, detail: client.file };
+  }
+
+  let existed = false;
+  const res = await editJsonFile(
+    client.file,
+    (cfg) => {
+      cfg[client.key] ||= {};
+      existed = Boolean(cfg[client.key][key]);
+      cfg[client.key][key] = entryFor(client, command, fullArgs);
+    },
+    { dryRun }
+  );
+  const status = res.status === "unchanged" ? "unchanged" : dryRun ? (existed ? "would update" : "would add") : existed ? "updated" : "added";
+  return { client: client.label, status, detail: client.file };
+}
+
+export async function init({
+  dryRun = false, launchMode = "auto", only = null, all = false,
+  skill = true, clients = CLIENTS, agySettings = AGY_SETTINGS,
+} = {}) {
   const { command, args } = launcher(launchMode);
   const results = [];
 
-  for (const client of CLIENTS) {
+  for (const client of clients) {
     if (only && !only.includes(client.id)) continue;
-
-    // Only touch clients that are actually present, unless --all is given.
-    const present = fs.existsSync(client.file) || fs.existsSync(path.dirname(client.file));
-    if (!present && !all) {
+    if (!all && !clientPresent(client)) {
       results.push({ client: client.label, status: "skipped", detail: "not installed" });
       continue;
     }
-
-    const key = serverKey(client);
-    const agentId = client.workerAgent || client.id;
-    const fullArgs = [...args, "--agent", agentId];
-
-    // Codex configures MCP servers in TOML; every other client is JSON.
-    if (client.format === "toml") {
-      if (dryRun) {
-        const already =
-          fs.existsSync(client.file) &&
-          fs.readFileSync(client.file, "utf8").includes(`[${client.key}.${key}]`);
-        results.push({ client: client.label, status: already ? "would update" : "would add", detail: client.file });
-        continue;
-      }
-      try {
-        backup(client.file);
-        const had = writeTomlServer(client.file, client.key, key, command, fullArgs);
-        results.push({ client: client.label, status: had ? "updated" : "added", detail: client.file });
-      } catch (e) {
-        results.push({ client: client.label, status: "error", detail: e.message });
-      }
-      continue;
-    }
-
-    let cfg;
     try {
-      cfg = readJson(client.file);
-    } catch (e) {
-      results.push({ client: client.label, status: "error", detail: e.message });
-      continue;
-    }
-
-    cfg[client.key] ||= {};
-    const existed = Boolean(cfg[client.key][key]);
-    cfg[client.key][key] = entryFor(client, command, fullArgs);
-
-    if (dryRun) {
-      results.push({ client: client.label, status: existed ? "would update" : "would add", detail: client.file });
-      continue;
-    }
-    try {
-      backup(client.file);
-      writeJson(client.file, cfg);
-      results.push({ client: client.label, status: existed ? "updated" : "added", detail: client.file });
+      results.push(await registerClient(client, command, args, dryRun));
     } catch (e) {
       results.push({ client: client.label, status: "error", detail: e.message });
     }
   }
 
   const agyFound = Boolean(findAgy({ required: false }));
-  const permission = agyFound ? allowAgyMcp({ dryRun }) : { ok: false, detail: "agy not installed" };
+  const permission = agyFound ? await allowAgyMcp({ dryRun, agySettings }) : { ok: false, detail: "agy not installed" };
 
-  const skillRes = skill ? installSkill({ dryRun, only, all }) : null;
+  const skillRes = skill ? await installSkill({ dryRun, only, all, clients }) : null;
 
   return { command, args, results, agyFound, permission, skill: skillRes };
 }
 
 export function printInit(res) {
-  const touched = res.results.filter((r) => r.status !== "skipped");
+  const touched = res.results.filter((r) => r.status !== "skipped" && r.status !== "unchanged");
   const via = res.command === "npx" ? `${res.command} ${res.args.join(" ")}` : res.command;
   console.log(`\n  antigravity-mcp-server — launching via: ${via}\n`);
   for (const r of res.results) {
-    const mark = r.status === "error" ? "x" : r.status === "skipped" ? "-" : "+";
+    const mark = r.status === "error" ? "x" : r.status === "skipped" || r.status === "unchanged" ? "-" : "+";
     console.log(`  ${mark} ${r.client.padEnd(22)} ${r.status.padEnd(12)} ${r.detail}`);
   }
   console.log(
@@ -304,7 +272,7 @@ export function printInit(res) {
       const mark = r.status === "error" ? "x" : r.status === "unchanged" ? "-" : "+";
       console.log(`    ${mark} ${r.status.padEnd(12)} ${r.file}  [${r.clients.join(", ")}]`);
     }
-    console.log("    Re-run init to refresh it; pass --no-skill to skip. Remove it by deleting the marked block.");
+    console.log("    Re-run init to refresh it; pass --no-skill to skip. Undo with: antigravity-mcp-server deinit");
   }
 
   if (!res.agyFound) {
@@ -323,6 +291,6 @@ export function printInit(res) {
   if (touched.length) {
     console.log("\n  Restart your MCP clients to pick up the new server.\n");
   } else {
-    console.log("\n  Nothing registered. Pass --all to write configs for clients that are not installed.\n");
+    console.log("\n  Nothing changed. Pass --all to write configs for clients that are not installed.\n");
   }
 }

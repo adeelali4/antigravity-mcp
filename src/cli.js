@@ -95,7 +95,7 @@ const HELP = `
   deinit options
     --dry-run                 Show what would be removed, write nothing
     --skill-only              Only remove the memory block; leave MCP registration in place
-    --all                     Also check clients that are not installed
+    --all                     Also strip the memory block from clients that are not installed
     --only <ids>              Comma-separated client ids
 
   doctor options
@@ -260,7 +260,7 @@ async function main() {
     case "init": {
       const only = valueOf("--only");
       printInit(
-        init({
+        await init({
           dryRun: has("--dry-run"),
           all: has("--all"),
           only: only ? only.split(",").map((s) => s.trim()) : null,
@@ -273,22 +273,14 @@ async function main() {
     case "deinit":
     case "unregister": {
       const only = valueOf("--only");
-      const silent = has("--silent");
-      try {
-        const res = deinit({
+      process.exitCode = printDeinit(
+        await deinit({
           dryRun: has("--dry-run"),
           all: has("--all"),
           only: only ? only.split(",").map((s) => s.trim()) : null,
           skillOnly: has("--skill-only"),
-        });
-        if (silent) return; // preuninstall best-effort: never block an uninstall
-        process.exitCode = printDeinit(res);
-      } catch (e) {
-        if (!silent) {
-          console.error(`deinit: ${e.message}`);
-          process.exitCode = 1;
-        }
-      }
+        })
+      );
       return;
     }
     case "update": {

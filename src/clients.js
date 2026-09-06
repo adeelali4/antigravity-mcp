@@ -7,11 +7,21 @@
  *
  * `memoryFile`, when set, is the client's global instructions file. `init`
  * writes a managed "skill" block into it (see skill.js) so the agent keeps
- * knowing what this server is for. Clients with no stable global file (Cursor,
- * Claude Desktop, VS Code) leave it unset and rely on the MCP `instructions`
- * string alone.
+ * knowing what this server is for. Left unset for clients with no stable
+ * file-based global instruction mechanism:
+ *   - Cursor        — user rules live in its settings DB, not a plain file.
+ *   - Claude Desktop — no instructions file at all.
+ *   - VS Code       — has user-profile `*.instructions.md`, but the on-by-default
+ *                     global path is version-dependent; left for a later pass.
+ * Those clients rely on the MCP `instructions` string alone.
+ *
+ * `presenceDir`, when set, overrides "is this client installed?" — it defaults
+ * to `dirname(file)`, which is wrong for claude-code (its config sits directly
+ * in $HOME, so `dirname` is $HOME and every machine looks like it has Claude
+ * Code). Use `clientPresent()` rather than testing this inline.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
@@ -21,7 +31,11 @@ const MAC = process.platform === "darwin";
 const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
 const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(HOME, ".config");
 
-/** ~/.gemini/GEMINI.md — the global context file gemini-cli and Antigravity both load. */
+/**
+ * ~/.gemini/GEMINI.md — the Gemini-ecosystem global context file. gemini-cli
+ * loads it directly; the Antigravity CLI is Gemini-based and shares ~/.gemini/,
+ * so it honours the same convention. Low harm if a future agy build ignores it.
+ */
 const GEMINI_MD = path.join(HOME, ".gemini", "GEMINI.md");
 
 export const appSupport = (...p) =>
@@ -37,6 +51,7 @@ export const CLIENTS = [
     key: "mcpServers",
     shape: "standard",
     memoryFile: path.join(HOME, ".claude", "CLAUDE.md"),
+    presenceDir: path.join(HOME, ".claude"),
   },
   {
     id: "cursor",
@@ -131,6 +146,18 @@ export const CLIENTS = [
 
 /** agy refuses MCP calls in headless mode unless allow-listed here. */
 export const AGY_SETTINGS = path.join(HOME, ".gemini", "antigravity-cli", "settings.json");
+
+/**
+ * Is this client installed? True if its config file exists, or the directory
+ * that signals the tool is present does. `presenceDir` defaults to the config
+ * file's parent — correct for every client whose config lives in its own dir,
+ * and explicitly overridden for the ones (claude-code) whose config sits in
+ * $HOME. `--all` bypasses this.
+ */
+export function clientPresent(client) {
+  const dir = client.presenceDir || path.dirname(client.file);
+  return fs.existsSync(client.file) || fs.existsSync(dir);
+}
 
 /** Server key: peers see "antigravity"; the worker side sees the board as "coop". */
 export const serverKey = (client) => (client.workerAgent ? "coop" : "antigravity");

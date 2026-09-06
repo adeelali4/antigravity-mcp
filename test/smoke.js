@@ -7,9 +7,13 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { printUpdate } from "../src/update.js";
-import { installSkill } from "../src/init.js";
+import { init, installSkill } from "../src/init.js";
 import { deinit } from "../src/deinit.js";
-import { upsertSkillBlock, stripSkillBlock, hasSkillBlock, SKILL_MARK_BEGIN, SKILL_MARK_END } from "../src/skill.js";
+import {
+  upsertSkillBlock, stripSkillBlock, hasSkillBlock, skillMarkersBalanced,
+  SKILL_MARK_BEGIN, SKILL_MARK_END, SKILL_BODY, MalformedBlockError,
+} from "../src/skill.js";
+import { editManagedFile } from "../src/fileEdit.js";
 import { restart, printRestart } from "../src/restart.js";
 import { lockFromCli, unlockFromCli, sendNoteFromCli, readNotesFromCli } from "../src/commands.js";
 import { read as readBoard, mutate as mutateBoard } from "../src/store.js";
@@ -644,56 +648,114 @@ check("update prompts for init", captured.includes("init"));
 check("update prompts for reset", captured.includes("reset --yes"));
 check("update prompts for restart", captured.includes("restart"));
 
-// --- init's managed "skill" block: idempotent insert/replace into a global memory file ---
-const blankInsert = upsertSkillBlock("");
-check("upsertSkillBlock into empty text emits a complete block",
-  blankInsert.startsWith(SKILL_MARK_BEGIN) && blankInsert.trimEnd().endsWith(SKILL_MARK_END));
-
-const prior = "# My global rules\n\nAlways write tests.\n";
+// --- markerBlock: the fiddly text handling that broke real files in review ---
+const prior = "# My global rules\r\n\r\nAlways write tests.\r\n"; // CRLF on purpose (win32)
 const withBlock = upsertSkillBlock(prior);
-check("upsertSkillBlock keeps the user's existing content", withBlock.startsWith(prior.trimEnd()));
-check("upsertSkillBlock appends the block once", withBlock.split(SKILL_MARK_BEGIN).length === 2);
+check("upsert: user content preserved", withBlock.startsWith("# My global rules") && withBlock.includes("Always write tests."));
+check("upsert: exactly one block", withBlock.split(SKILL_MARK_BEGIN).length === 2);
+check("upsert: CRLF file gets a CRLF block", withBlock.includes(`${SKILL_MARK_BEGIN}\r\n`));
+check("upsert: idempotent", upsertSkillBlock(withBlock) === withBlock);
+check("strip: CRLF round-trip is byte-exact", stripSkillBlock(withBlock) === prior);
+check("strip: markers balanced after strip", skillMarkersBalanced(stripSkillBlock(withBlock)).ok);
 
-const twice = upsertSkillBlock(withBlock);
-check("upsertSkillBlock is idempotent (second run is a no-op)", twice === withBlock);
-check("upsertSkillBlock never stacks blocks", twice.split(SKILL_MARK_BEGIN).length === 2);
+// A torn block (BEGIN, no END) must NOT be "repaired" by appending a second one.
+let threw = false;
+try { upsertSkillBlock(`intro\n\n${SKILL_MARK_BEGIN}\nhalf\n\n# KEEP THIS LINE\n`); }
+catch (e) { threw = e instanceof MalformedBlockError; }
+check("upsert: torn block throws MalformedBlockError, does not append", threw);
+check("markers: torn block reads as unbalanced", !skillMarkersBalanced(`${SKILL_MARK_BEGIN}\nx\n`).ok);
 
-// An edited block must be replaced in place, not duplicated.
-const staleBlock = `${SKILL_MARK_BEGIN}\nold outdated text\n${SKILL_MARK_END}`;
-const refreshed = upsertSkillBlock(`intro\n\n${staleBlock}\n\noutro\n`);
-check("upsertSkillBlock replaces a stale block in place", refreshed.split(SKILL_MARK_BEGIN).length === 2);
-check("upsertSkillBlock preserves text around the block",
-  refreshed.startsWith("intro") && refreshed.trimEnd().endsWith("outro"));
-check("upsertSkillBlock drops the stale body", !refreshed.includes("old outdated text"));
+// Duplicate blocks (copy/paste, a merge) all get reconciled.
+const dup = withBlock + "\n\n" + withBlock.slice(withBlock.indexOf(SKILL_MARK_BEGIN));
+check("upsert: duplicate blocks collapse to one", upsertSkillBlock(dup).split(SKILL_MARK_BEGIN).length === 2);
+check("strip: removes every duplicate block", !hasSkillBlock(stripSkillBlock(dup)));
 
-check("stripSkillBlock removes the managed block", !hasSkillBlock(stripSkillBlock(withBlock)));
-check("stripSkillBlock keeps the user's content", stripSkillBlock(withBlock).includes("Always write tests."));
+// Markers inside a fenced code example (someone pasting the README) are left alone.
+const fenced = "# Doc\n\n```\n" + SKILL_MARK_BEGIN + "\nexample\n" + SKILL_MARK_END + "\n```\n\nreal text\n";
+check("upsert: fenced example is not treated as the block", upsertSkillBlock(fenced).split(SKILL_MARK_BEGIN).length === 3);
+check("strip: fenced example survives", stripSkillBlock(upsertSkillBlock(fenced)).includes("```\n" + SKILL_MARK_BEGIN));
 
-// installSkill in dry-run must write nothing and dedupe files (GEMINI.md is
-// shared by gemini-cli + both Antigravity surfaces).
-const dry = installSkill({ dryRun: true, all: true });
-const OK_STATUS = new Set(["would create", "would add", "would update", "unchanged", "error"]);
-check("installSkill dry-run returns results", dry.results.length > 0, `${dry.results.length} files`);
-check("installSkill only reports known statuses in dry-run",
-  dry.results.every((r) => OK_STATUS.has(r.status)),
+// $-patterns in the body stay literal (body is a public parameter).
+check("upsert: $& / $1 in body are literal", upsertSkillBlock("", "has $& and $1").includes("has $& and $1"));
+
+// SKILL_BODY drift guard: the tools that matter must be named.
+for (const tool of ["coop_status", "claim_paths", "release_paths", "board_update", "notes_send",
+  "notes_read", "task_reassign", "<backend>_delegate", "brain_write", "presence_set"]) {
+  check(`SKILL_BODY names ${tool}`, SKILL_BODY.includes(tool));
+}
+
+// --- installSkill / init / deinit against a synthetic client roster in the sandbox ---
+const cRoot = path.join(SANDBOX, "clients");
+const mkClient = (id, memName) => {
+  const c = {
+    id, label: `Client ${id}`,
+    file: path.join(cRoot, id, "mcp.json"),
+    key: "mcpServers", shape: "standard",
+    memoryFile: path.join(cRoot, memName),
+    presenceDir: path.join(cRoot, id),
+  };
+  fs.mkdirSync(path.dirname(c.file), { recursive: true });
+  return c;
+};
+const CL = [mkClient("x", "x/RULES.md"), mkClient("y", "shared/CTX.md"), mkClient("z", "shared/CTX.md")];
+fs.mkdirSync(path.join(cRoot, "shared"), { recursive: true });
+fs.writeFileSync(CL[0].memoryFile, "# x rules\n\ntabs not spaces\n"); // pre-existing user file
+
+// dry run writes nothing
+const preState = fs.readFileSync(CL[0].memoryFile, "utf8");
+const dry = await installSkill({ dryRun: true, clients: CL });
+check("installSkill dry-run writes nothing", fs.readFileSync(CL[0].memoryFile, "utf8") === preState);
+check("installSkill dry-run dedupes the shared file", dry.results.length === 2);
+check("installSkill dry-run: no status is 'error'", dry.results.every((r) => r.status !== "error"),
   dry.results.map((r) => r.status).join(","));
-check("installSkill dedupes a shared memory file",
-  new Set(dry.results.map((r) => r.file)).size === dry.results.length);
-check("installSkill maps each file back to its clients",
-  dry.results.every((r) => Array.isArray(r.clients) && r.clients.length > 0));
 
-// deinit is the inverse: a full round-trip on text must restore the original.
-const roundTrip = stripSkillBlock(upsertSkillBlock(prior));
-check("install then remove restores the file", roundTrip.trim() === prior.trim(), JSON.stringify(roundTrip));
+// real install
+const ins = await installSkill({ clients: CL });
+check("installSkill: pre-existing file gets 'added'", ins.results.find((r) => r.file === CL[0].memoryFile).status === "added");
+check("installSkill: new shared file gets 'created'", ins.results.find((r) => r.file === CL[1].memoryFile).status === "created");
+check("installSkill: user content survives", fs.readFileSync(CL[0].memoryFile, "utf8").includes("tabs not spaces"));
+check("installSkill: shared file maps to both clients", ins.results.find((r) => r.file === CL[1].memoryFile).clients.length === 2);
+check("installSkill: second run all unchanged", (await installSkill({ clients: CL })).results.every((r) => r.status === "unchanged"));
+check("installSkill: pristine backup kept", fs.readFileSync(CL[0].memoryFile + ".bak-antigravity-mcp", "utf8") === "# x rules\n\ntabs not spaces\n");
 
-const dryOut = deinit({ dryRun: true, all: true });
-const DEINIT_OK = new Set(["would remove", "not registered", "skipped", "error"]);
-check("deinit dry-run reports client removals", dryOut.results.every((r) => DEINIT_OK.has(r.status)),
-  dryOut.results.map((r) => r.status).join(","));
-check("deinit dry-run reports skill-block removals",
-  dryOut.skill.results.every((r) => ["would remove", "absent", "error"].includes(r.status)),
-  dryOut.skill.results.map((r) => r.status).join(","));
-check("deinit --skill-only skips MCP config", deinit({ dryRun: true, all: true, skillOnly: true }).results.length === 0);
+// a malformed file is reported and left untouched
+fs.writeFileSync(CL[0].memoryFile, `# x rules\n\n${SKILL_MARK_BEGIN}\ntorn\n\n# DO NOT LOSE THIS\n`);
+const mal = await installSkill({ clients: CL });
+check("installSkill: malformed file -> error", mal.results.find((r) => r.file === CL[0].memoryFile).status === "error");
+check("installSkill: malformed file untouched", fs.readFileSync(CL[0].memoryFile, "utf8").includes("# DO NOT LOSE THIS"));
+fs.writeFileSync(CL[0].memoryFile, "# x rules\n\ntabs not spaces\n");
+await installSkill({ clients: CL });
+
+// deinit --skill-only: block removed, file kept, content kept
+const dss = await deinit({ skillOnly: true, clients: CL });
+check("deinit skill-only: block removed", !hasSkillBlock(fs.readFileSync(CL[0].memoryFile, "utf8")));
+check("deinit skill-only: user content kept", fs.readFileSync(CL[0].memoryFile, "utf8").includes("tabs not spaces"));
+check("deinit skill-only: file we created is NOT deleted", fs.existsSync(CL[1].memoryFile));
+check("deinit skill-only: leaves MCP config alone", dss.results.length === 0);
+
+// deinit must not CREATE files that were never there
+const missingAgy = path.join(SANDBOX, "never-existed-agy.json");
+await deinit({ clients: [], agySettings: missingAgy });
+check("deinit does not create a missing agy settings file", !fs.existsSync(missingAgy));
+
+// full init -> deinit round trip on configs (sandboxed agy settings — never the real one)
+const sandboxAgy = path.join(SANDBOX, "agy-settings.json");
+await init({ clients: CL, skill: false, agySettings: sandboxAgy });
+check("init: client x registered", JSON.parse(fs.readFileSync(CL[0].file, "utf8")).mcpServers?.antigravity !== undefined);
+const de = await deinit({ clients: CL, agySettings: sandboxAgy });
+check("deinit: client x unregistered", JSON.parse(fs.readFileSync(CL[0].file, "utf8")).mcpServers?.antigravity === undefined);
+check("deinit: reports success (no errors)", !de.results.some((r) => r.status === "error") && !de.skill.results.some((r) => r.status === "error"));
+
+// concurrency: two edits on one file must both land (the lock serializes them)
+const raceFile = path.join(cRoot, "race.md");
+fs.writeFileSync(raceFile, "start\n");
+const settled = await Promise.allSettled([
+  editManagedFile(raceFile, (t) => (t ?? "") + "A\n"),
+  editManagedFile(raceFile, (t) => (t ?? "") + "B\n"),
+]);
+check("editManagedFile: concurrent edits both resolve", settled.every((s) => s.status === "fulfilled"));
+const raced = fs.readFileSync(raceFile, "utf8");
+check("editManagedFile: no lost update under contention", raced.includes("A") && raced.includes("B"), JSON.stringify(raced));
 
 await alice.close();
 await bob.close();

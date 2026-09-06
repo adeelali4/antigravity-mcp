@@ -121,7 +121,7 @@ export async function restart({
   // 4. If requested, re-run init to refresh client configs
   let initResult = null;
   if (runInit) {
-    initResult = init();
+    initResult = await init();
   }
 
   // 5. If --ui requested, spawn a fresh detached UI server

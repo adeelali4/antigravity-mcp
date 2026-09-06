@@ -462,16 +462,20 @@ If an identity's status looks permanently stuck, or the board seems to be carryi
 
 ### Config generation
 
-`init` only touches tools it finds, and backs up any file it edits to `<file>.bak-antigravity-mcp`.
+`init` only touches tools it finds. Every file it edits is first copied, once, to
+`<file>.bak-antigravity-mcp` — the pristine pre-`init` version, kept even across later
+runs — and written back atomically under a lock, so two agents (or an `init` and a
+`deinit`) racing on the same file can't corrupt it.
 
 Alongside the MCP config, `init` writes a marker-delimited managed block
 (`<!-- BEGIN antigravity-mcp-server … -->` … `<!-- END antigravity-mcp-server -->`) into
 each tool's global instructions file — `~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`
 (shared by Gemini CLI and Antigravity), `~/.codex/AGENTS.md`, `~/.config/opencode/AGENTS.md`,
-`~/.codeium/windsurf/memories/global_rules.md`. Re-running `init` replaces the block in
-place; delete the block to remove it, or run `init --no-skill` to leave these files
-untouched. Tools with no stable global instructions file (Cursor, Claude Desktop, VS Code)
-rely on the server's MCP `instructions` string instead.
+`~/.codeium/windsurf/memories/global_rules.md`. Re-running `init` refreshes the block in
+place (markers inside a fenced code example are left alone; a hand-mangled block is
+reported, not overwritten). `init --no-skill` leaves these files untouched;
+`deinit` removes the block. Tools with no stable global instructions file (Cursor,
+Claude Desktop, VS Code) rely on the server's MCP `instructions` string instead.
 
 | Tool | Config path | Key |
 |---|---|---|
@@ -500,14 +504,14 @@ A global install is worth the extra step over `npx`: your editor spawns this ser
 
 ### Uninstalling
 
-npm v7+ deliberately runs **no** script when a package is removed, so `npm uninstall` can't clean up after itself. Run `deinit` first — it reverses everything `init` did: unregisters the server from every client config, strips the managed block from every global instructions file (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, …), and removes the agy permission rule.
+**No** package manager runs a cleanup script when this package is removed — npm v7+ dropped uninstall lifecycle scripts entirely. Run `deinit` yourself first, with your editors closed (it edits their live config files):
 
 ```bash
 antigravity-mcp-server deinit            # then:
 npm uninstall -g antigravity-mcp-server
 ```
 
-`deinit --dry-run` previews it; `deinit --skill-only` removes just the instructions block and leaves the MCP registration alone. Every file it edits is backed up to `<file>.bak-antigravity-mcp` first. Package managers that still honour `preuninstall` (Yarn 1, pnpm with pre/post scripts enabled) run `deinit` automatically; npm does not. If the package is already gone, the block is plain text between `<!-- BEGIN antigravity-mcp-server … -->` and `<!-- END antigravity-mcp-server -->` markers — delete it by hand.
+`deinit` reverses everything `init` did: unregisters the server from every client config, strips the managed block from every global instructions file, and removes the agy permission rule. It never deletes a file — an instructions file it created is just left empty. `deinit --dry-run` previews it; `deinit --skill-only` removes only the instructions block. The pristine pre-`init` copy of every file it changed stays at `<file>.bak-antigravity-mcp`. If the package is already gone, the block is plain text between `<!-- BEGIN antigravity-mcp-server … -->` and `<!-- END antigravity-mcp-server -->` — delete those lines by hand.
 
 ### Good to know
 

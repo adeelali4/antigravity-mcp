@@ -4,8 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { CLIENTS, AGY_SETTINGS, serverKey } from "./clients.js";
-import { hasSkillBlock } from "./skill.js";
+import { CLIENTS, AGY_SETTINGS, serverKey, clientPresent } from "./clients.js";
+import { hasSkillBlock, skillMarkersBalanced } from "./skill.js";
 import { findAgy } from "./agy.js";
 import { loadBackends } from "./backends.js";
 import { launchSpec } from "./proc.js";
@@ -94,27 +94,27 @@ export async function doctor({ probe = false } = {}) {
     add(`client: ${c.label}`, registered ? PASS : WARN, registered ? "registered" : "config found, server not registered — run: antigravity-mcp-server init");
   }
 
-  // The managed instructions block: check only files whose client is actually
-  // present, deduped (GEMINI.md is shared). Missing is a WARN, not a FAIL --
-  // coordination still works, the agent just is not reminded what it is for.
-  const memoryFiles = new Map();
-  for (const c of CLIENTS) {
-    if (!c.memoryFile) continue;
-    if (!(fs.existsSync(c.file) || fs.existsSync(path.dirname(c.file)))) continue;
-    memoryFiles.set(c.memoryFile, true);
-  }
-  const memList = [...memoryFiles.keys()];
-  const missing = memList.filter((f) => {
-    try { return !hasSkillBlock(fs.readFileSync(f, "utf8")); } catch { return true; }
-  });
+  // The managed instructions block, deduped over present clients (GEMINI.md is
+  // shared). all present -> PASS; a torn/duplicated block -> WARN with the fix;
+  // some present -> WARN (partial install); none -> stay quiet (could be
+  // --no-skill, or a version that predates the feature).
+  const memList = [...new Set(CLIENTS.filter((c) => c.memoryFile && clientPresent(c)).map((c) => c.memoryFile))];
   if (memList.length) {
-    add(
-      "skill blocks",
-      missing.length ? WARN : PASS,
-      missing.length
-        ? `${memList.length - missing.length}/${memList.length} global memory files have the block — run: antigravity-mcp-server init`
-        : `present in all ${memList.length} global memory files`
-    );
+    let withBlock = 0;
+    const torn = [];
+    for (const f of memList) {
+      let text = "";
+      try { text = fs.readFileSync(f, "utf8"); } catch { /* absent */ }
+      if (!skillMarkersBalanced(text).ok) torn.push(f);
+      else if (hasSkillBlock(text)) withBlock++;
+    }
+    if (torn.length) {
+      add("skill blocks", WARN, `${torn.length} file(s) have a torn/duplicated block — fix by hand: ${torn.join(", ")}`);
+    } else if (withBlock === memList.length) {
+      add("skill blocks", PASS, `present in all ${memList.length} global memory files`);
+    } else if (withBlock > 0) {
+      add("skill blocks", WARN, `${withBlock}/${memList.length} global memory files have the block — run: antigravity-mcp-server init`);
+    }
   }
 
   if (probe && agy) {

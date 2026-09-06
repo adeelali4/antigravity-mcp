@@ -24,8 +24,7 @@
     "test": "node test/smoke.js",
     "ui:build": "cd ui && npm install && npm run build",
     "prepare": "node -e \"if(!require('fs').existsSync('ui-dist/index.html'))require('child_process').execSync('npm run ui:build',{stdio:'inherit'})\"",
-    "prepublishOnly": "npm run ui:build",
-    "preuninstall": "node src/cli.js deinit --silent"
+    "prepublishOnly": "npm run ui:build"
   },
   "keywords": [
     "mcp",
