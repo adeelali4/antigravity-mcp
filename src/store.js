@@ -271,11 +271,14 @@ export function read() {
  * Board growth is otherwise unbounded, and every read parses the whole file --
  * on every tool call, and once per poll while a *_task_wait blocks. Tasks and
  * notes that are finished and read are history nothing queries again, so they
- * get the same treatment `events` already had. Anything still live (open or
- * running tasks, unread notes) is never dropped, regardless of count.
+ * get the same treatment `events` already had. Live tasks are never dropped by
+ * count; an unread note is only dropped once it is old enough that its
+ * addressee is plainly never coming back for it (it re-echoes in that agent's
+ * coop_status until then).
  */
 const KEEP_FINISHED_TASKS = 40;
 const KEEP_READ_NOTES = 50;
+const NOTE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const TERMINAL = ["done", "failed", "cancelled"];
 
 function prune(board) {
@@ -290,6 +293,11 @@ function prune(board) {
     board.notes = board.notes.filter((n) => !drop.has(n.id));
   }
   const now = Date.now();
+  // An unread note to an agent that never connects (a mis-typed `to`, a backend
+  // that was never started) is dead weight that re-echoes in that addressee's
+  // coop_status forever. Reap it once it is clearly abandoned; read notes stay
+  // governed by count above, not age.
+  board.notes = board.notes.filter((n) => n.readAt || !n.created || now - n.created < NOTE_MAX_AGE_MS);
   if (board.limits) {
     for (const [owner, entry] of Object.entries(board.limits)) {
       if (entry?.resets_at && Date.parse(entry.resets_at) <= now) {

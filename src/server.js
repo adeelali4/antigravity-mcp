@@ -938,14 +938,27 @@ export async function buildServer() {
       // starting work" -- so it learns where THIS project currently stands
       // without needing to have been told or to infer it from history.
       const memory = brainPreview(process.cwd());
+      // presence accumulates one dead entry per concurrent session --
+      // resolveAgentIdentity() suffixes "-2", "-3", ... and prune() keeps them
+      // for 7 days. This payload is read before every chunk of work, so surface
+      // only agents that are actually live or still hold work; fold the rest
+      // into a count. Without this the block grows with usage instead of
+      // shrinking.
+      const PRESENCE_SHOWN_MS = 30 * 60_000;
+      const busyAgents = new Set([...b.locks.map((l) => l.owner), ...activeTasks.map((t) => t.owner)]);
+      const shownPresence = Object.entries(b.presence).filter(
+        ([agent, p]) => agent === AGENT || busyAgents.has(agent) || Date.now() - (p.ts || 0) < PRESENCE_SHOWN_MS
+      );
+      const staleAgents = Object.keys(b.presence).length - shownPresence.length;
       return ok({
         you_are: AGENT,
         seq: b.seq,
-        presence: Object.entries(b.presence).map(([agent, p]) => ({
+        presence: shownPresence.map(([agent, p]) => ({
           agent, status: p.status, detail: p.detail, last_seen: ago(p.ts),
           ...(p.model && { model: p.model }),
           ...(p.pid && { pid: p.pid, cwd: p.cwd }),
         })),
+        ...(staleAgents && { stale_agents: staleAgents }),
         // Nothing locked/pending/unread is the common case -- omitting the
         // key entirely reads the same to an LLM as an empty array, for free.
         ...(activeTasks.length && { active_tasks: activeTasks }),

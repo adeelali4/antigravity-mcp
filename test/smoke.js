@@ -16,7 +16,7 @@ import {
 import { editManagedFile } from "../src/fileEdit.js";
 import { restart, printRestart } from "../src/restart.js";
 import { lockFromCli, unlockFromCli, sendNoteFromCli, readNotesFromCli } from "../src/commands.js";
-import { read as readBoard, mutate as mutateBoard } from "../src/store.js";
+import { read as readBoard, mutate as mutateBoard, promptPath } from "../src/store.js";
 import { pickFailover, BACKENDS_LIST } from "../src/server.js";
 import { writeBrainNote, readBrainNote, brainPreview, searchBrain, projectSlug, brainRoot } from "../src/brain.js";
 import {
@@ -105,6 +105,53 @@ const status = await call(alice, "coop_status");
 check("presence visible to peer", status.presence.some((p) => p.agent === "antigravity"));
 check("peer sees locked paths", status.locked_paths.length === 3);
 check("identity is per-process", status.you_are === "claude");
+
+// --- token frugality: since_seq delta, and stale presence must not ship every call ---
+const s1 = await call(alice, "coop_status");
+const cached = await call(alice, "coop_status", { since_seq: s1.seq });
+check("coop_status returns {unchanged} when the board has not moved", cached.unchanged === true && cached.seq === s1.seq);
+await call(alice, "notes_send", { to: "antigravity", body: "seq bump" });
+check("coop_status sends the full payload once seq advances",
+  !(await call(alice, "coop_status", { since_seq: s1.seq })).unchanged);
+await call(bob, "notes_read", {});
+
+await mutateBoard((b) => {
+  const stale = Date.now() - 3 * 60 * 60 * 1000; // 3h ago
+  b.presence["ghost-idle"] = { status: "idle", detail: "", ts: stale };
+  b.presence["ghost-locker"] = { status: "working", detail: "still holds a lock", ts: stale };
+  b.locks.push({ path: path.join(SANDBOX, "ghost-held.txt"), owner: "ghost-locker", created: Date.now() });
+});
+const filtered = await call(alice, "coop_status");
+const shown = filtered.presence.map((p) => p.agent);
+check("stale idle agent is dropped from the presence payload", !shown.includes("ghost-idle"));
+check("stale agent that still holds a lock is kept", shown.includes("ghost-locker"));
+check("caller's own presence is always shown", shown.includes("claude"));
+check("dropped agents are counted, not silently gone", filtered.stale_agents >= 1, String(filtered.stale_agents));
+await mutateBoard((b) => {
+  delete b.presence["ghost-idle"];
+  delete b.presence["ghost-locker"];
+  b.locks = b.locks.filter((l) => l.owner !== "ghost-locker");
+});
+
+// --- prune: an abandoned unread note is reaped once it is clearly stale ---
+const old = Date.now() - 20 * 24 * 60 * 60 * 1000; // 20 days
+await mutateBoard((b) => {
+  b.notes.push(
+    { id: "pr-unread-old", from: "ghost", to: "nobody-home", body: "ancient unread", created: old, readAt: null },
+    { id: "pr-read-old", from: "ghost", to: "nobody-home", body: "ancient read", created: old, readAt: old },
+    { id: "pr-unread-new", from: "ghost", to: "nobody-home", body: "recent unread", created: Date.now(), readAt: null }
+  );
+});
+const notesNow = readBoard().notes.map((n) => n.id);
+check("prune reaps an unread note past the age cap", !notesNow.includes("pr-unread-old"));
+check("prune keeps a recent unread note", notesNow.includes("pr-unread-new"));
+check("prune does not age-drop a read note", notesNow.includes("pr-read-old"));
+await mutateBoard((b) => { b.notes = b.notes.filter((n) => !String(n.id).startsWith("pr-")); });
+
+// --- briefs are kept OFF the board (so failover can replay them for free) ---
+check("task records never carry the brief text",
+  readBoard().tasks.every((t) => !("prompt" in t) && !("brief" in t)));
+check("brief lives in the runs dir, not the board", promptPath("abc").includes("runs"));
 
 // --- brain tools over the real stdio connection ---
 // cwdA/cwdB declared here (not down by the direct-checks block below, closer
