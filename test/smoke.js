@@ -23,6 +23,7 @@ import {
   computeAgents, inferLiveActivity, getAntigravityActivity, getClaudeActivity,
   claudeProjectDir, resetHostScanCache,
 } from "../src/ui/bridgeState.js";
+import { runUnits } from "./units.js";
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 const SANDBOX = path.join(os.tmpdir(), "antigravity-mcp-test");
@@ -803,6 +804,37 @@ const settled = await Promise.allSettled([
 check("editManagedFile: concurrent edits both resolve", settled.every((s) => s.status === "fulfilled"));
 const raced = fs.readFileSync(raceFile, "utf8");
 check("editManagedFile: no lost update under contention", raced.includes("A") && raced.includes("B"), JSON.stringify(raced));
+
+// The real-world scenario the cross-process lock exists for: several separate
+// `init` PROCESSES writing the same CLAUDE.md at once (two editor windows, an
+// init while a `restart --init` runs). In-process promise contention above
+// can't prove the on-disk lock; only real child processes can.
+const raceHome = path.join(SANDBOX, "race-home");
+fs.mkdirSync(path.join(raceHome, ".claude"), { recursive: true });
+fs.writeFileSync(path.join(raceHome, ".claude.json"), "{}\n");
+const raceBody = "# rules\n\n" + Array.from({ length: 150 }, (_, i) => `- rule ${i}`).join("\n") + "\n";
+fs.writeFileSync(path.join(raceHome, ".claude", "CLAUDE.md"), raceBody);
+const raceEnv = { ...process.env, USERPROFILE: raceHome, HOME: raceHome, ANTIGRAVITY_MCP_HOME: path.join(SANDBOX, "race-board") };
+const { spawn: spawnProc } = await import("node:child_process");
+const codes = await Promise.all(
+  Array.from({ length: 3 }, () => new Promise((res) => {
+    const c = spawnProc(process.execPath, [CLI, "init", "--only", "claude-code"], { env: raceEnv, stdio: "ignore" });
+    c.on("exit", (code) => res(code));
+  }))
+);
+const raceMd = fs.readFileSync(path.join(raceHome, ".claude", "CLAUDE.md"), "utf8");
+check("concurrent init processes all exit 0", codes.every((c) => c === 0), codes.join(","));
+check("concurrent init: user's 150 rules survive intact", raceMd.includes("- rule 0") && raceMd.includes("- rule 149"));
+check("concurrent init: exactly one managed block (no interleaved write)",
+  (raceMd.match(new RegExp(SKILL_MARK_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length === 1);
+check("concurrent init: block is well-formed", raceMd.includes(SKILL_MARK_END) && raceMd.indexOf(SKILL_MARK_BEGIN) < raceMd.indexOf(SKILL_MARK_END));
+check("concurrent init: no lock dir or tmp files left behind",
+  !fs.existsSync(path.join(raceHome, ".claude", "CLAUDE.md.antigravity-lock")) &&
+  !fs.readdirSync(path.join(raceHome, ".claude")).some((f) => f.includes(".tmp")));
+check("concurrent init: .claude.json still valid with one server entry",
+  Object.keys(JSON.parse(fs.readFileSync(path.join(raceHome, ".claude.json"), "utf8")).mcpServers || {}).length === 1);
+
+await runUnits(check, { alice, bob, call, sandbox: SANDBOX });
 
 await alice.close();
 await bob.close();

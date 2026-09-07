@@ -81,6 +81,10 @@ export async function editManagedFile(file, transform, { dryRun = false } = {}) 
   };
 
   if (dryRun) return run(); // read-only: no lock needed
+  // The lock is a sibling of the target, so its parent must exist before we can
+  // create it -- true when `file` is a not-yet-created config in a not-yet-
+  // created dir (~/.codex/AGENTS.md on a machine with no ~/.codex).
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const lock = createLock(`${file}.antigravity-lock`);
   await lock.acquire();
   try {

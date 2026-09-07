@@ -23,7 +23,7 @@ export class MalformedBlockError extends Error {
 /** Majority line ending in `text`; `\n` when it is a toss-up or there are none. */
 export function detectEol(text = "") {
   const crlf = (text.match(/\r\n/g) || []).length;
-  const lf = (text.match(/(^|[^\r])\n/g) || []).length;
+  const lf = (text.match(/(?<!\r)\n/g) || []).length;
   return crlf > lf ? "\r\n" : "\n";
 }
 
