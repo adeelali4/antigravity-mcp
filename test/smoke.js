@@ -1,7 +1,6 @@
 /** End-to-end smoke test: real stdio MCP clients, two agent identities, one board. */
 
 import path from "node:path";
-import os from "node:os";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -24,17 +23,13 @@ import {
   claudeProjectDir, resetHostScanCache,
 } from "../src/ui/bridgeState.js";
 import { runUnits } from "./units.js";
+import { setupSandbox, SANDBOX, HOST_HOME } from "./sandbox.js";
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
-const SANDBOX = path.join(os.tmpdir(), "antigravity-mcp-test");
-// Both of these must point into the sandbox before anything reads them.
-// ANTIGRAVITY_MCP_HOST_HOME in particular: without it, host-activity detection
-// reads the developer's REAL ~/.claude and ~/.gemini, and the assertions below
-// come out different depending on what they happen to be running at the time.
-const HOST_HOME = path.join(SANDBOX, "host-home");
-process.env.ANTIGRAVITY_MCP_HOME = SANDBOX;
-process.env.ANTIGRAVITY_MCP_HOST_HOME = HOST_HOME;
-fs.rmSync(SANDBOX, { recursive: true, force: true });
+// Point the board + host-scan roots at a temp dir. store.js reads these lazily,
+// so doing it here (after the imports, before the first connect/mutate) is soon
+// enough. See test/sandbox.js for why both vars matter.
+setupSandbox();
 
 let failures = 0;
 const check = (name, cond, extra = "") => {

@@ -9,6 +9,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { assertSandboxed } from "./sandbox.js";
 import {
   detectEol,
   fenceRanges,
@@ -434,6 +436,7 @@ export async function runFileEditTests(check, sandboxRoot) {
 }
 
 export async function runStorePruneTests(check) {
+  assertSandboxed(); // never mutate the real ~/.antigravity-mcp board
   const now = Date.now();
   const DAY = 24 * 60 * 60 * 1000;
   let origNotes = [];
@@ -549,6 +552,7 @@ export async function runStorePruneTests(check) {
 }
 
 export async function runCoopStatusAdversarialTests(check, { alice, bob, call, sandbox }) {
+  assertSandboxed(); // never mutate the real ~/.antigravity-mcp board
   const stale = Date.now() - 3 * 60 * 60 * 1000; // 3 hours ago
 
   await mutate((b) => {
@@ -648,7 +652,28 @@ export async function runCoopStatusAdversarialTests(check, { alice, bob, call, s
   });
 }
 
+/** The guard that stops a board-touching test from ever hitting ~/.antigravity-mcp again. */
+export async function runSandboxGuardTests(check) {
+  const { assertSandboxed } = await import("./sandbox.js");
+  const saved = process.env.ANTIGRAVITY_MCP_HOME;
+  const throws = (val) => {
+    if (val === undefined) delete process.env.ANTIGRAVITY_MCP_HOME;
+    else process.env.ANTIGRAVITY_MCP_HOME = val;
+    try { assertSandboxed(); return false; } catch { return true; }
+  };
+  check("assertSandboxed: rejects unset ANTIGRAVITY_MCP_HOME", throws(undefined));
+  check("assertSandboxed: rejects the real board path", throws(path.join(os.homedir(), ".antigravity-mcp")));
+  check("assertSandboxed: rejects os.tmpdir() root itself", throws(os.tmpdir()));
+  check("assertSandboxed: accepts a subdir of os.tmpdir()", !throws(path.join(os.tmpdir(), "antigravity-mcp-test")));
+  check("assertSandboxed: case-insensitive on the tmp prefix (win32 drive casing)",
+    !throws(os.tmpdir().toLowerCase() + path.sep + "amcp-x"));
+  process.env.ANTIGRAVITY_MCP_HOME = saved; // restore for the tests that follow
+}
+
 export async function runUnits(check, { alice, bob, call, sandbox }) {
+  console.log("\n--- Running sandbox-guard unit tests ---");
+  await runSandboxGuardTests(check);
+
   console.log("\n--- Running markerBlock unit tests ---");
   runMarkerBlockTests(check);
 
@@ -662,4 +687,22 @@ export async function runUnits(check, { alice, bob, call, sandbox }) {
     console.log("\n--- Running coop_status adversarial tests ---");
     await runCoopStatusAdversarialTests(check, { alice, bob, call, sandbox });
   }
+}
+
+// Standalone: `node test/units.js` runs the pure + board tests (no stdio
+// clients, so coop_status is skipped) against a fresh temp sandbox. This is the
+// fast-feedback path -- reaching for it WITHOUT a sandbox is what wiped a live
+// task once, so it now self-sandboxes before touching anything.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { setupSandbox } = await import("./sandbox.js");
+  const { SANDBOX } = setupSandbox();
+  let failures = 0;
+  const check = (name, cond, extra = "") => {
+    console.log(`  ${cond ? "+" : "x"} ${name}${extra ? ` — ${extra}` : ""}`);
+    if (!cond) failures++;
+  };
+  await runUnits(check, { sandbox: SANDBOX });
+  fs.rmSync(SANDBOX, { recursive: true, force: true });
+  console.log(failures ? `\n${failures} failure(s)\n` : "\nall passed\n");
+  process.exit(failures ? 1 : 0);
 }
