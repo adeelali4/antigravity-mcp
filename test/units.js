@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { assertSandboxed } from "./sandbox.js";
+import { assertSandboxed, setupSandbox } from "./sandbox.js";
 import {
   detectEol,
   fenceRanges,
@@ -653,8 +653,7 @@ export async function runCoopStatusAdversarialTests(check, { alice, bob, call, s
 }
 
 /** The guard that stops a board-touching test from ever hitting ~/.antigravity-mcp again. */
-export async function runSandboxGuardTests(check) {
-  const { assertSandboxed } = await import("./sandbox.js");
+export function runSandboxGuardTests(check) {
   const saved = process.env.ANTIGRAVITY_MCP_HOME;
   const throws = (val) => {
     if (val === undefined) delete process.env.ANTIGRAVITY_MCP_HOME;
@@ -672,7 +671,7 @@ export async function runSandboxGuardTests(check) {
 
 export async function runUnits(check, { alice, bob, call, sandbox }) {
   console.log("\n--- Running sandbox-guard unit tests ---");
-  await runSandboxGuardTests(check);
+  runSandboxGuardTests(check);
 
   console.log("\n--- Running markerBlock unit tests ---");
   runMarkerBlockTests(check);
@@ -694,7 +693,6 @@ export async function runUnits(check, { alice, bob, call, sandbox }) {
 // fast-feedback path -- reaching for it WITHOUT a sandbox is what wiped a live
 // task once, so it now self-sandboxes before touching anything.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { setupSandbox } = await import("./sandbox.js");
   const { SANDBOX } = setupSandbox();
   let failures = 0;
   const check = (name, cond, extra = "") => {
